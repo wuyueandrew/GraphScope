@@ -163,6 +163,8 @@
     <span class="n">kube_config</span> <span class="o">=</span> <span class="kc">None</span>
 
 <span class="kn">import</span> <span class="nn">graphscope</span>
+<span class="kn">from</span> <span class="nn">graphscope.analytical.udf.utils</span> <span class="kn">import</span> <span class="n">InMemoryZip</span>
+<span class="kn">from</span> <span class="nn">graphscope.client.archive</span> <span class="kn">import</span> <span class="n">OutArchive</span>
 <span class="kn">from</span> <span class="nn">graphscope.client.rpc</span> <span class="kn">import</span> <span class="n">GRPCClient</span>
 <span class="kn">from</span> <span class="nn">graphscope.client.utils</span> <span class="kn">import</span> <span class="n">CaptureKeyboardInterrupt</span>
 <span class="kn">from</span> <span class="nn">graphscope.client.utils</span> <span class="kn">import</span> <span class="n">GSLogger</span>
@@ -171,6 +173,7 @@
 <span class="kn">from</span> <span class="nn">graphscope.config</span> <span class="kn">import</span> <span class="n">GSConfig</span> <span class="k">as</span> <span class="n">gs_config</span>
 <span class="kn">from</span> <span class="nn">graphscope.deploy.hosts.cluster</span> <span class="kn">import</span> <span class="n">HostsClusterLauncher</span>
 <span class="kn">from</span> <span class="nn">graphscope.deploy.kubernetes.cluster</span> <span class="kn">import</span> <span class="n">KubernetesClusterLauncher</span>
+<span class="kn">from</span> <span class="nn">graphscope.deploy.kubernetes.utils</span> <span class="kn">import</span> <span class="n">resolve_api_client</span>
 <span class="kn">from</span> <span class="nn">graphscope.framework.dag</span> <span class="kn">import</span> <span class="n">Dag</span>
 <span class="kn">from</span> <span class="nn">graphscope.framework.errors</span> <span class="kn">import</span> <span class="n">FatalError</span>
 <span class="kn">from</span> <span class="nn">graphscope.framework.errors</span> <span class="kn">import</span> <span class="n">InteractiveEngineInternalError</span>
@@ -188,6 +191,7 @@
 <span class="kn">from</span> <span class="nn">graphscope.proto</span> <span class="kn">import</span> <span class="n">message_pb2</span>
 <span class="kn">from</span> <span class="nn">graphscope.proto</span> <span class="kn">import</span> <span class="n">op_def_pb2</span>
 <span class="kn">from</span> <span class="nn">graphscope.proto</span> <span class="kn">import</span> <span class="n">types_pb2</span>
+<span class="kn">from</span> <span class="nn">graphscope.version</span> <span class="kn">import</span> <span class="n">__version__</span>
 
 <span class="n">DEFAULT_CONFIG_FILE</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">environ</span><span class="o">.</span><span class="n">get</span><span class="p">(</span>
     <span class="s2">&quot;GS_CONFIG_PATH&quot;</span><span class="p">,</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">expanduser</span><span class="p">(</span><span class="s2">&quot;~/.graphscope/session.json&quot;</span><span class="p">)</span>
@@ -218,7 +222,7 @@
             <span class="k">if</span> <span class="nb">hasattr</span><span class="p">(</span><span class="n">fetch</span><span class="p">,</span> <span class="s2">&quot;op&quot;</span><span class="p">):</span>
                 <span class="n">fetch</span> <span class="o">=</span> <span class="n">fetch</span><span class="o">.</span><span class="n">op</span>
             <span class="k">if</span> <span class="ow">not</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">fetch</span><span class="p">,</span> <span class="n">Operation</span><span class="p">):</span>
-                <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s2">&quot;Expect a `Operation` in sess run method.&quot;</span><span class="p">)</span>
+                <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s2">&quot;Expect an `Operation` in sess run method.&quot;</span><span class="p">)</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">_ops</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">fetch</span><span class="p">)</span>
         <span class="c1"># extract sub dag</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_sub_dag</span> <span class="o">=</span> <span class="n">dag</span><span class="o">.</span><span class="n">extract_subdag_for</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_ops</span><span class="p">)</span>
@@ -233,6 +237,8 @@
         <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_fetches</span><span class="p">[</span><span class="n">seq</span><span class="p">],</span> <span class="n">Operation</span><span class="p">):</span>
             <span class="c1"># for nx Graph</span>
             <span class="k">return</span> <span class="n">op_result</span><span class="o">.</span><span class="n">graph_def</span>
+        <span class="c1"># run_app op also can return graph result, so judge here</span>
+
         <span class="c1"># get graph dag node as base</span>
         <span class="n">graph_dag_node</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_fetches</span><span class="p">[</span><span class="n">seq</span><span class="p">]</span>
         <span class="c1"># construct graph</span>
@@ -246,17 +252,16 @@
     <span class="p">):</span>
         <span class="kn">from</span> <span class="nn">graphscope.learning.graph</span> <span class="kn">import</span> <span class="n">Graph</span> <span class="k">as</span> <span class="n">LearningGraph</span>
 
-        <span class="n">handle</span> <span class="o">=</span> <span class="n">op_result</span><span class="o">.</span><span class="n">handle</span>
+        <span class="n">result</span> <span class="o">=</span> <span class="n">op_result</span><span class="o">.</span><span class="n">result</span><span class="o">.</span><span class="n">decode</span><span class="p">(</span><span class="s2">&quot;utf-8&quot;</span><span class="p">)</span>
+        <span class="n">result</span> <span class="o">=</span> <span class="n">json</span><span class="o">.</span><span class="n">loads</span><span class="p">(</span><span class="n">result</span><span class="p">)</span>
+        <span class="n">handle</span> <span class="o">=</span> <span class="n">result</span><span class="p">[</span><span class="s2">&quot;handle&quot;</span><span class="p">]</span>
         <span class="n">handle</span> <span class="o">=</span> <span class="n">json</span><span class="o">.</span><span class="n">loads</span><span class="p">(</span><span class="n">base64</span><span class="o">.</span><span class="n">b64decode</span><span class="p">(</span><span class="n">handle</span><span class="p">)</span><span class="o">.</span><span class="n">decode</span><span class="p">(</span><span class="s2">&quot;utf-8&quot;</span><span class="p">))</span>
-        <span class="n">config</span> <span class="o">=</span> <span class="n">op_result</span><span class="o">.</span><span class="n">config</span><span class="o">.</span><span class="n">decode</span><span class="p">(</span><span class="s2">&quot;utf-8&quot;</span><span class="p">)</span>
-        <span class="n">handle</span><span class="p">[</span><span class="s2">&quot;server&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="n">op_result</span><span class="o">.</span><span class="n">result</span><span class="o">.</span><span class="n">decode</span><span class="p">(</span><span class="s2">&quot;utf-8&quot;</span><span class="p">)</span>
+        <span class="n">handle</span><span class="p">[</span><span class="s2">&quot;server&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="s2">&quot;,&quot;</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">result</span><span class="p">[</span><span class="s2">&quot;endpoints&quot;</span><span class="p">])</span>
         <span class="n">handle</span><span class="p">[</span><span class="s2">&quot;client_count&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="mi">1</span>
 
         <span class="n">graph_dag_node</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_fetches</span><span class="p">[</span><span class="n">seq</span><span class="p">]</span>
         <span class="c1"># construct learning graph</span>
-        <span class="n">g</span> <span class="o">=</span> <span class="n">LearningGraph</span><span class="p">(</span>
-            <span class="n">graph_dag_node</span><span class="p">,</span> <span class="n">handle</span><span class="p">,</span> <span class="n">config</span><span class="p">,</span> <span class="n">op_result</span><span class="o">.</span><span class="n">extra_info</span><span class="o">.</span><span class="n">decode</span><span class="p">(</span><span class="s2">&quot;utf-8&quot;</span><span class="p">)</span>
-        <span class="p">)</span>
+        <span class="n">g</span> <span class="o">=</span> <span class="n">LearningGraph</span><span class="p">(</span><span class="n">graph_dag_node</span><span class="p">,</span> <span class="n">handle</span><span class="p">,</span> <span class="n">result</span><span class="p">[</span><span class="s2">&quot;config&quot;</span><span class="p">],</span> <span class="n">result</span><span class="p">[</span><span class="s2">&quot;object_id&quot;</span><span class="p">])</span>
         <span class="k">return</span> <span class="n">g</span>
 
     <span class="k">def</span> <span class="nf">_rebuild_interactive_query</span><span class="p">(</span>
@@ -265,10 +270,12 @@
         <span class="c1"># get interactive query dag node as base</span>
         <span class="n">interactive_query_node</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_fetches</span><span class="p">[</span><span class="n">seq</span><span class="p">]</span>
         <span class="c1"># construct interactive query</span>
+        <span class="n">result</span> <span class="o">=</span> <span class="n">op_result</span><span class="o">.</span><span class="n">result</span><span class="o">.</span><span class="n">decode</span><span class="p">(</span><span class="s2">&quot;utf-8&quot;</span><span class="p">)</span>
+        <span class="n">result</span> <span class="o">=</span> <span class="n">json</span><span class="o">.</span><span class="n">loads</span><span class="p">(</span><span class="n">result</span><span class="p">)</span>
         <span class="n">interactive_query</span> <span class="o">=</span> <span class="n">InteractiveQuery</span><span class="p">(</span>
             <span class="n">interactive_query_node</span><span class="p">,</span>
-            <span class="n">op_result</span><span class="o">.</span><span class="n">result</span><span class="o">.</span><span class="n">decode</span><span class="p">(</span><span class="s2">&quot;utf-8&quot;</span><span class="p">),</span>
-            <span class="n">op_result</span><span class="o">.</span><span class="n">extra_info</span><span class="o">.</span><span class="n">decode</span><span class="p">(</span><span class="s2">&quot;utf-8&quot;</span><span class="p">),</span>
+            <span class="n">result</span><span class="p">[</span><span class="s2">&quot;endpoint&quot;</span><span class="p">],</span>
+            <span class="n">result</span><span class="p">[</span><span class="s2">&quot;object_id&quot;</span><span class="p">],</span>
         <span class="p">)</span>
         <span class="n">interactive_query</span><span class="o">.</span><span class="n">status</span> <span class="o">=</span> <span class="n">InteractiveQueryStatus</span><span class="o">.</span><span class="n">Running</span>
         <span class="k">return</span> <span class="n">interactive_query</span>
@@ -304,7 +311,7 @@
         <span class="n">result_set_dag_node</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_fetches</span><span class="p">[</span><span class="n">seq</span><span class="p">]</span>
         <span class="k">return</span> <span class="n">ResultSet</span><span class="p">(</span><span class="n">result_set_dag_node</span><span class="p">)</span>
 
-    <span class="k">def</span> <span class="nf">wrap_results</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">response</span><span class="p">:</span> <span class="n">message_pb2</span><span class="o">.</span><span class="n">RunStepResponse</span><span class="p">):</span>
+    <span class="k">def</span> <span class="nf">wrap_results</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">response</span><span class="p">:</span> <span class="n">message_pb2</span><span class="o">.</span><span class="n">RunStepResponse</span><span class="p">):</span>  <span class="c1"># noqa: C901</span>
         <span class="n">rets</span> <span class="o">=</span> <span class="nb">list</span><span class="p">()</span>
         <span class="k">for</span> <span class="n">seq</span><span class="p">,</span> <span class="n">op</span> <span class="ow">in</span> <span class="nb">enumerate</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_ops</span><span class="p">):</span>
             <span class="k">for</span> <span class="n">op_result</span> <span class="ow">in</span> <span class="n">response</span><span class="o">.</span><span class="n">results</span><span class="p">:</span>
@@ -314,6 +321,8 @@
                             <span class="n">rets</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_rebuild_context</span><span class="p">(</span><span class="n">seq</span><span class="p">,</span> <span class="n">op</span><span class="p">,</span> <span class="n">op_result</span><span class="p">))</span>
                         <span class="k">elif</span> <span class="n">op</span><span class="o">.</span><span class="n">type</span> <span class="o">==</span> <span class="n">types_pb2</span><span class="o">.</span><span class="n">FETCH_GREMLIN_RESULT</span><span class="p">:</span>
                             <span class="n">rets</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">pickle</span><span class="o">.</span><span class="n">loads</span><span class="p">(</span><span class="n">op_result</span><span class="o">.</span><span class="n">result</span><span class="p">))</span>
+                        <span class="k">elif</span> <span class="n">op</span><span class="o">.</span><span class="n">type</span> <span class="o">==</span> <span class="n">types_pb2</span><span class="o">.</span><span class="n">REPORT_GRAPH</span><span class="p">:</span>
+                            <span class="n">rets</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">OutArchive</span><span class="p">(</span><span class="n">op_result</span><span class="o">.</span><span class="n">result</span><span class="p">))</span>
                         <span class="k">else</span><span class="p">:</span>
                             <span class="c1"># for nx Graph</span>
                             <span class="n">rets</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">op_result</span><span class="o">.</span><span class="n">result</span><span class="o">.</span><span class="n">decode</span><span class="p">(</span><span class="s2">&quot;utf-8&quot;</span><span class="p">))</span>
@@ -350,7 +359,7 @@
                     <span class="k">if</span> <span class="n">op</span><span class="o">.</span><span class="n">output_types</span> <span class="o">==</span> <span class="n">types_pb2</span><span class="o">.</span><span class="n">NULL_OUTPUT</span><span class="p">:</span>
                         <span class="n">rets</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="kc">None</span><span class="p">)</span>
                     <span class="k">break</span>
-        <span class="k">return</span> <span class="n">rets</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_unpack</span> <span class="k">else</span> <span class="n">rets</span>
+        <span class="k">return</span> <span class="n">rets</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="k">if</span> <span class="n">rets</span> <span class="ow">and</span> <span class="bp">self</span><span class="o">.</span><span class="n">_unpack</span> <span class="k">else</span> <span class="n">rets</span>
 
     <span class="k">def</span> <span class="nf">get_dag_for_unload</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
         <span class="sd">&quot;&quot;&quot;Unload operations (graph, app, context) in dag which are not</span>
@@ -451,6 +460,9 @@
         <span class="n">k8s_image_pull_secrets</span><span class="o">=</span><span class="n">gs_config</span><span class="o">.</span><span class="n">k8s_image_pull_secrets</span><span class="p">,</span>
         <span class="n">k8s_coordinator_cpu</span><span class="o">=</span><span class="n">gs_config</span><span class="o">.</span><span class="n">k8s_coordinator_cpu</span><span class="p">,</span>
         <span class="n">k8s_coordinator_mem</span><span class="o">=</span><span class="n">gs_config</span><span class="o">.</span><span class="n">k8s_coordinator_mem</span><span class="p">,</span>
+        <span class="n">etcd_addrs</span><span class="o">=</span><span class="n">gs_config</span><span class="o">.</span><span class="n">etcd_addrs</span><span class="p">,</span>
+        <span class="n">etcd_listening_client_port</span><span class="o">=</span><span class="n">gs_config</span><span class="o">.</span><span class="n">etcd_listening_client_port</span><span class="p">,</span>
+        <span class="n">etcd_listening_peer_port</span><span class="o">=</span><span class="n">gs_config</span><span class="o">.</span><span class="n">etcd_listening_peer_port</span><span class="p">,</span>
         <span class="n">k8s_etcd_num_pods</span><span class="o">=</span><span class="n">gs_config</span><span class="o">.</span><span class="n">k8s_etcd_num_pods</span><span class="p">,</span>
         <span class="n">k8s_etcd_cpu</span><span class="o">=</span><span class="n">gs_config</span><span class="o">.</span><span class="n">k8s_etcd_cpu</span><span class="p">,</span>
         <span class="n">k8s_etcd_mem</span><span class="o">=</span><span class="n">gs_config</span><span class="o">.</span><span class="n">k8s_etcd_mem</span><span class="p">,</span>
@@ -464,6 +476,9 @@
         <span class="n">k8s_mars_worker_mem</span><span class="o">=</span><span class="n">gs_config</span><span class="o">.</span><span class="n">mars_worker_mem</span><span class="p">,</span>
         <span class="n">k8s_mars_scheduler_cpu</span><span class="o">=</span><span class="n">gs_config</span><span class="o">.</span><span class="n">mars_scheduler_cpu</span><span class="p">,</span>
         <span class="n">k8s_mars_scheduler_mem</span><span class="o">=</span><span class="n">gs_config</span><span class="o">.</span><span class="n">mars_scheduler_mem</span><span class="p">,</span>
+        <span class="n">k8s_coordinator_pod_node_selector</span><span class="o">=</span><span class="n">gs_config</span><span class="o">.</span><span class="n">k8s_coordinator_pod_node_selector</span><span class="p">,</span>
+        <span class="n">k8s_etcd_pod_node_selector</span><span class="o">=</span><span class="n">gs_config</span><span class="o">.</span><span class="n">k8s_etcd_pod_node_selector</span><span class="p">,</span>
+        <span class="n">k8s_engine_pod_node_selector</span><span class="o">=</span><span class="n">gs_config</span><span class="o">.</span><span class="n">k8s_engine_pod_node_selector</span><span class="p">,</span>
         <span class="n">k8s_volumes</span><span class="o">=</span><span class="n">gs_config</span><span class="o">.</span><span class="n">k8s_volumes</span><span class="p">,</span>
         <span class="n">k8s_waiting_for_delete</span><span class="o">=</span><span class="n">gs_config</span><span class="o">.</span><span class="n">k8s_waiting_for_delete</span><span class="p">,</span>
         <span class="n">timeout_seconds</span><span class="o">=</span><span class="n">gs_config</span><span class="o">.</span><span class="n">timeout_seconds</span><span class="p">,</span>
@@ -471,6 +486,7 @@
         <span class="n">with_mars</span><span class="o">=</span><span class="n">gs_config</span><span class="o">.</span><span class="n">with_mars</span><span class="p">,</span>
         <span class="n">mount_dataset</span><span class="o">=</span><span class="n">gs_config</span><span class="o">.</span><span class="n">mount_dataset</span><span class="p">,</span>
         <span class="n">reconnect</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
+        <span class="n">hosts</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;localhost&quot;</span><span class="p">],</span>
         <span class="o">**</span><span class="n">kw</span><span class="p">,</span>
     <span class="p">):</span>
         <span class="sd">&quot;&quot;&quot;Construct a new GraphScope session.</span>
@@ -538,6 +554,9 @@
 
 <span class="sd">            k8s_coordinator_mem (str, optional): Minimum number of memory request for coordinator pod. Defaults to &#39;4Gi&#39;.</span>
 
+<span class="sd">            etcd_addrs (str, optional): The addr of external etcd cluster,</span>
+<span class="sd">                with formats like &#39;etcd01:port,etcd02:port,etcd03:port&#39;</span>
+
 <span class="sd">            k8s_etcd_num_pods (int, optional): The number of etcd pods. Defaults to 3.</span>
 
 <span class="sd">            k8s_etcd_cpu (float, optional): Minimum number of CPU cores request for etcd pod. Defaults to 0.5.</span>
@@ -555,6 +574,18 @@
 
 <span class="sd">            k8s_mars_scheduler_mem (str, optional):</span>
 <span class="sd">                Minimum number of memory request for mars scheduler container. Defaults to &#39;2Gi&#39;.</span>
+
+<span class="sd">            k8s_coordinator_pod_node_selector (dict, optional):</span>
+<span class="sd">                Node selector to the coordinator pod on k8s. Default is None.</span>
+<span class="sd">                See also: https://tinyurl.com/3nx6k7ph</span>
+
+<span class="sd">            k8s_etcd_pod_node_selector (dict, optional):</span>
+<span class="sd">                Node selector to the etcd pod on k8s. Default is None.</span>
+<span class="sd">                See also: https://tinyurl.com/3nx6k7ph</span>
+
+<span class="sd">            k8s_engine_pod_node_selector = None</span>
+<span class="sd">                Node selector to the engine pod on k8s. Default is None.</span>
+<span class="sd">                See also: https://tinyurl.com/3nx6k7ph</span>
 
 <span class="sd">            with_mars (bool, optional):</span>
 <span class="sd">                Launch graphscope with mars. Defaults to False.</span>
@@ -628,10 +659,16 @@
 
 <span class="sd">                - k8s_client_config (dict, optional):</span>
 <span class="sd">                    Provide configurable parameters for connecting to remote k8s,</span>
-<span class="sd">                    which strongly relies on the `kube_config.new_client_from_config` function.</span>
-<span class="sd">                    eg: {&quot;config_file&quot;: &quot;~/.kube/config&quot;, &quot;context&quot;: None, &quot;persist_config&quot;: True}</span>
+<span class="sd">                    which strongly relies on the `kube_config.load_kube_config` function.</span>
+<span class="sd">                    eg: {</span>
+<span class="sd">                        &quot;config_file&quot;: &quot;~/.kube/config&quot;,</span>
+<span class="sd">                        &quot;context&quot;: None,</span>
+<span class="sd">                        &quot;client_configuration&quot;: None,</span>
+<span class="sd">                        &quot;persist_config&quot;: True</span>
+<span class="sd">                    }</span>
 <span class="sd">                    config_file: Name of the kube-config file.</span>
 <span class="sd">                    context: set the active context. If is set to None, current_context from config file will be used.</span>
+<span class="sd">                    client_configuration: The kubernetes.client.Configuration to set configs to.</span>
 <span class="sd">                    persist_config: If True, config file will be updated when changed(e.g GCP token refresh).</span>
 
 <span class="sd">                - log_level: Deprecated.</span>
@@ -639,9 +676,6 @@
 
 <span class="sd">                - show_log: Deprecated.</span>
 <span class="sd">                    Move this param as a global configuration.Set via `graphscope.set_option(show_log=True)`</span>
-
-<span class="sd">                - k8s_vineyard_shared_mem: Deprecated.</span>
-<span class="sd">                    Please use vineyard_shared_mem instead.</span>
 
 <span class="sd">            reconnect (bool, optional): When connecting to a pre-launched GraphScope cluster with :code:`addr`,</span>
 <span class="sd">                the connect request would be rejected with there is still an existing session connected. There</span>
@@ -653,18 +687,15 @@
 <span class="sd">                to ensure there&#39;s no such an active client actually.</span>
 
 <span class="sd">                Defaults to :code:`False`.</span>
-<span class="sd">                - k8s_gie_graph_manager_image: Deprecated.</span>
-<span class="sd">                - k8s_gie_graph_manager_cpu: Deprecated.</span>
-<span class="sd">                - k8s_gie_graph_manager_mem: Deprecated.</span>
-
-<span class="sd">                - k8s_zookeeper_image: Deprecated.</span>
-<span class="sd">                - k8s_zookeeper_cpu: Deprecated.</span>
-<span class="sd">                - k8s_zookeeper_mem: Deprecated.</span>
 
 <span class="sd">        Raises:</span>
 <span class="sd">            TypeError: If the given argument combination is invalid and cannot be used to create</span>
 <span class="sd">                a GraphScope session.</span>
 <span class="sd">        &quot;&quot;&quot;</span>
+
+        <span class="c1"># supress the grpc warnings, see also grpc/grpc#29103</span>
+        <span class="n">os</span><span class="o">.</span><span class="n">environ</span><span class="p">[</span><span class="s2">&quot;GRPC_ENABLE_FORK_SUPPORT&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="s2">&quot;false&quot;</span>
+
         <span class="bp">self</span><span class="o">.</span><span class="n">_config_params</span> <span class="o">=</span> <span class="p">{}</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_accessable_params</span> <span class="o">=</span> <span class="p">(</span>
             <span class="s2">&quot;addr&quot;</span><span class="p">,</span>
@@ -680,6 +711,9 @@
             <span class="s2">&quot;k8s_image_pull_secrets&quot;</span><span class="p">,</span>
             <span class="s2">&quot;k8s_coordinator_cpu&quot;</span><span class="p">,</span>
             <span class="s2">&quot;k8s_coordinator_mem&quot;</span><span class="p">,</span>
+            <span class="s2">&quot;etcd_addrs&quot;</span><span class="p">,</span>
+            <span class="s2">&quot;etcd_listening_client_port&quot;</span><span class="p">,</span>
+            <span class="s2">&quot;etcd_listening_peer_port&quot;</span><span class="p">,</span>
             <span class="s2">&quot;k8s_etcd_num_pods&quot;</span><span class="p">,</span>
             <span class="s2">&quot;k8s_etcd_cpu&quot;</span><span class="p">,</span>
             <span class="s2">&quot;k8s_etcd_mem&quot;</span><span class="p">,</span>
@@ -693,6 +727,9 @@
             <span class="s2">&quot;k8s_mars_worker_mem&quot;</span><span class="p">,</span>
             <span class="s2">&quot;k8s_mars_scheduler_cpu&quot;</span><span class="p">,</span>
             <span class="s2">&quot;k8s_mars_scheduler_mem&quot;</span><span class="p">,</span>
+            <span class="s2">&quot;k8s_coordinator_pod_node_selector&quot;</span><span class="p">,</span>
+            <span class="s2">&quot;k8s_etcd_pod_node_selector&quot;</span><span class="p">,</span>
+            <span class="s2">&quot;k8s_engine_pod_node_selector&quot;</span><span class="p">,</span>
             <span class="s2">&quot;with_mars&quot;</span><span class="p">,</span>
             <span class="s2">&quot;reconnect&quot;</span><span class="p">,</span>
             <span class="s2">&quot;k8s_volumes&quot;</span><span class="p">,</span>
@@ -701,17 +738,11 @@
             <span class="s2">&quot;dangling_timeout_seconds&quot;</span><span class="p">,</span>
             <span class="s2">&quot;mount_dataset&quot;</span><span class="p">,</span>
             <span class="s2">&quot;k8s_dataset_image&quot;</span><span class="p">,</span>
+            <span class="s2">&quot;hosts&quot;</span><span class="p">,</span>
         <span class="p">)</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_deprecated_params</span> <span class="o">=</span> <span class="p">(</span>
             <span class="s2">&quot;show_log&quot;</span><span class="p">,</span>
             <span class="s2">&quot;log_level&quot;</span><span class="p">,</span>
-            <span class="s2">&quot;k8s_vineyard_shared_mem&quot;</span><span class="p">,</span>
-            <span class="s2">&quot;k8s_gie_graph_manager_image&quot;</span><span class="p">,</span>
-            <span class="s2">&quot;k8s_gie_graph_manager_cpu&quot;</span><span class="p">,</span>
-            <span class="s2">&quot;k8s_gie_graph_manager_mem&quot;</span><span class="p">,</span>
-            <span class="s2">&quot;k8s_zookeeper_image&quot;</span><span class="p">,</span>
-            <span class="s2">&quot;k8s_zookeeper_cpu&quot;</span><span class="p">,</span>
-            <span class="s2">&quot;k8s_zookeeper_mem&quot;</span><span class="p">,</span>
         <span class="p">)</span>
         <span class="n">saved_locals</span> <span class="o">=</span> <span class="nb">locals</span><span class="p">()</span>
         <span class="k">for</span> <span class="n">param</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">_accessable_params</span><span class="p">:</span>
@@ -822,6 +853,7 @@
         <span class="p">)</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_heartbeat_sending_thread</span><span class="o">.</span><span class="n">daemon</span> <span class="o">=</span> <span class="kc">True</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_heartbeat_sending_thread</span><span class="o">.</span><span class="n">start</span><span class="p">()</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_heartbeat_maximum_failures</span> <span class="o">=</span> <span class="mi">3</span>
 
         <span class="c1"># networkx module</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_nx</span> <span class="o">=</span> <span class="kc">None</span></div>
@@ -903,16 +935,36 @@
         <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_config_params</span><span class="p">[</span><span class="s2">&quot;mode&quot;</span><span class="p">]</span> <span class="o">==</span> <span class="s2">&quot;eager&quot;</span>
 
     <span class="k">def</span> <span class="nf">_send_heartbeat</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="c1"># &gt;1: failure, 0: reset when success</span>
+        <span class="n">heartbeat_failure_count</span> <span class="o">=</span> <span class="mi">0</span>
         <span class="k">while</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">_closed</span><span class="p">:</span>
             <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_grpc_client</span><span class="p">:</span>
                 <span class="k">try</span><span class="p">:</span>
                     <span class="bp">self</span><span class="o">.</span><span class="n">_grpc_client</span><span class="o">.</span><span class="n">send_heartbeat</span><span class="p">()</span>
                 <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">exc</span><span class="p">:</span>
-                    <span class="n">logger</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="n">exc</span><span class="p">)</span>
+                    <span class="k">if</span> <span class="n">heartbeat_failure_count</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
+                        <span class="n">logger</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="n">exc</span><span class="p">)</span>
+                    <span class="n">heartbeat_failure_count</span> <span class="o">=</span> <span class="n">heartbeat_failure_count</span> <span class="o">+</span> <span class="mi">1</span>
+                    <span class="k">if</span> <span class="n">heartbeat_failure_count</span> <span class="o">&gt;</span> <span class="bp">self</span><span class="o">.</span><span class="n">_heartbeat_maximum_failures</span><span class="p">:</span>
+                        <span class="n">logger</span><span class="o">.</span><span class="n">error</span><span class="p">(</span>
+                            <span class="s2">&quot;The connection between coordinator has lost after </span><span class="si">%d</span><span class="s2"> times &quot;</span>
+                            <span class="s2">&quot;of heartbeat failure, closing the session ...&quot;</span><span class="p">,</span>
+                            <span class="n">heartbeat_failure_count</span><span class="p">,</span>
+                        <span class="p">)</span>
+                        <span class="bp">self</span><span class="o">.</span><span class="n">close</span><span class="p">()</span>
                     <span class="bp">self</span><span class="o">.</span><span class="n">_disconnected</span> <span class="o">=</span> <span class="kc">True</span>
                 <span class="k">else</span><span class="p">:</span>
+                    <span class="n">heartbeat_failure_count</span> <span class="o">=</span> <span class="mi">0</span>
                     <span class="bp">self</span><span class="o">.</span><span class="n">_disconnected</span> <span class="o">=</span> <span class="kc">False</span>
             <span class="n">time</span><span class="o">.</span><span class="n">sleep</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_heartbeat_interval_seconds</span><span class="p">)</span>
+
+<div class="viewcode-block" id="Session.connected"><a class="viewcode-back" href="../../../reference/session.html#graphscope.Session.connected">[docs]</a>    <span class="k">def</span> <span class="nf">connected</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
+        <span class="sd">&quot;&quot;&quot;Check if the session is still connected and available.</span>
+
+<span class="sd">        Returns: True or False</span>
+
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">_disconnected</span></div>
 
 <div class="viewcode-block" id="Session.close"><a class="viewcode-back" href="../../../reference/session.html#graphscope.Session.close">[docs]</a>    <span class="k">def</span> <span class="nf">close</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
         <span class="sd">&quot;&quot;&quot;Closes this session.</span>
@@ -921,22 +973,27 @@
 
 <span class="sd">        Note that closing will ignore SIGINT and SIGTERM signal and recover later.</span>
 <span class="sd">        &quot;&quot;&quot;</span>
-        <span class="k">with</span> <span class="n">SignalIgnore</span><span class="p">([</span><span class="n">signal</span><span class="o">.</span><span class="n">SIGINT</span><span class="p">,</span> <span class="n">signal</span><span class="o">.</span><span class="n">SIGTERM</span><span class="p">]):</span>
+        <span class="k">if</span> <span class="n">threading</span><span class="o">.</span><span class="n">currentThread</span><span class="p">()</span> <span class="ow">is</span> <span class="n">threading</span><span class="o">.</span><span class="n">main_thread</span><span class="p">():</span>
+            <span class="k">with</span> <span class="n">SignalIgnore</span><span class="p">([</span><span class="n">signal</span><span class="o">.</span><span class="n">SIGINT</span><span class="p">,</span> <span class="n">signal</span><span class="o">.</span><span class="n">SIGTERM</span><span class="p">]):</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_close</span><span class="p">()</span>
+        <span class="k">else</span><span class="p">:</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">_close</span><span class="p">()</span></div>
 
-    <span class="k">def</span> <span class="nf">_close</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+    <span class="k">def</span> <span class="nf">_close</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>  <span class="c1"># noqa: C901</span>
         <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_closed</span><span class="p">:</span>
             <span class="k">return</span>
-        <span class="n">time</span><span class="o">.</span><span class="n">sleep</span><span class="p">(</span><span class="mi">5</span><span class="p">)</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_closed</span> <span class="o">=</span> <span class="kc">True</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_coordinator_endpoint</span> <span class="o">=</span> <span class="kc">None</span>
 
         <span class="bp">self</span><span class="o">.</span><span class="n">_deregister_default</span><span class="p">()</span>
 
         <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_heartbeat_sending_thread</span><span class="p">:</span>
-            <span class="bp">self</span><span class="o">.</span><span class="n">_heartbeat_sending_thread</span><span class="o">.</span><span class="n">join</span><span class="p">(</span>
-                <span class="n">timeout</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">_heartbeat_interval_seconds</span>
-            <span class="p">)</span>
+            <span class="k">try</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_heartbeat_sending_thread</span><span class="o">.</span><span class="n">join</span><span class="p">(</span>
+                    <span class="n">timeout</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">_heartbeat_interval_seconds</span>
+                <span class="p">)</span>
+            <span class="k">except</span> <span class="ne">RuntimeError</span><span class="p">:</span>  <span class="c1"># ignore the &quot;cannot join current thread&quot; error</span>
+                <span class="k">pass</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">_heartbeat_sending_thread</span> <span class="o">=</span> <span class="kc">None</span>
 
         <span class="bp">self</span><span class="o">.</span><span class="n">_disconnected</span> <span class="o">=</span> <span class="kc">True</span>
@@ -1049,7 +1106,7 @@
         <span class="k">return</span> <span class="n">dag_node</span>
 
     <span class="k">def</span> <span class="nf">run</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">fetches</span><span class="p">,</span> <span class="n">debug</span><span class="o">=</span><span class="kc">False</span><span class="p">):</span>
-        <span class="sd">&quot;&quot;&quot;Run operations of `fetch`.</span>
+        <span class="sd">&quot;&quot;&quot;Run operations of `fetches`.</span>
 <span class="sd">        Args:</span>
 <span class="sd">            fetch: :class:`Operation`</span>
 
@@ -1067,6 +1124,10 @@
 <span class="sd">        Returns:</span>
 <span class="sd">            Different values for different output types of :class:`Operation`</span>
 <span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">run_fetches</span><span class="p">(</span><span class="n">fetches</span><span class="p">,</span> <span class="n">debug</span><span class="p">)</span>
+
+<div class="viewcode-block" id="Session.run_fetches"><a class="viewcode-back" href="../../../reference/session.html#graphscope.Session.run_fetches">[docs]</a>    <span class="k">def</span> <span class="nf">run_fetches</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">fetches</span><span class="p">,</span> <span class="n">debug</span><span class="o">=</span><span class="kc">False</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Run operations of `fetches` without the session lock.&quot;&quot;&quot;</span>
         <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_closed</span><span class="p">:</span>
             <span class="k">raise</span> <span class="ne">RuntimeError</span><span class="p">(</span><span class="s2">&quot;Attempted to use a closed Session.&quot;</span><span class="p">)</span>
         <span class="k">if</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">_grpc_client</span><span class="p">:</span>
@@ -1085,7 +1146,7 @@
             <span class="k">except</span> <span class="n">FatalError</span><span class="p">:</span>
                 <span class="bp">self</span><span class="o">.</span><span class="n">close</span><span class="p">()</span>
                 <span class="k">raise</span>
-        <span class="k">return</span> <span class="n">fetch_handler</span><span class="o">.</span><span class="n">wrap_results</span><span class="p">(</span><span class="n">response</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">fetch_handler</span><span class="o">.</span><span class="n">wrap_results</span><span class="p">(</span><span class="n">response</span><span class="p">)</span></div>
 
     <span class="k">def</span> <span class="nf">_connect</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
         <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_config_params</span><span class="p">[</span><span class="s2">&quot;addr&quot;</span><span class="p">]</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
@@ -1104,8 +1165,8 @@
                 <span class="n">api_client</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_config_params</span><span class="p">[</span><span class="s2">&quot;k8s_client_config&quot;</span><span class="p">]</span>
             <span class="k">else</span><span class="p">:</span>
                 <span class="k">try</span><span class="p">:</span>
-                    <span class="n">api_client</span> <span class="o">=</span> <span class="n">kube_config</span><span class="o">.</span><span class="n">new_client_from_config</span><span class="p">(</span>
-                        <span class="o">**</span><span class="bp">self</span><span class="o">.</span><span class="n">_config_params</span><span class="p">[</span><span class="s2">&quot;k8s_client_config&quot;</span><span class="p">]</span>
+                    <span class="n">api_client</span> <span class="o">=</span> <span class="n">resolve_api_client</span><span class="p">(</span>
+                        <span class="bp">self</span><span class="o">.</span><span class="n">_config_params</span><span class="p">[</span><span class="s2">&quot;k8s_client_config&quot;</span><span class="p">]</span>
                     <span class="p">)</span>
                 <span class="k">except</span> <span class="n">kube_config</span><span class="o">.</span><span class="n">ConfigException</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
                     <span class="k">raise</span> <span class="ne">RuntimeError</span><span class="p">(</span>
@@ -1184,7 +1245,6 @@
             <span class="k">return</span> <span class="n">graphscope</span><span class="o">.</span><span class="n">load_from</span><span class="p">(</span><span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span></div>
 
     <span class="k">def</span> <span class="nf">_run_on_local</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
-        <span class="bp">self</span><span class="o">.</span><span class="n">_config_params</span><span class="p">[</span><span class="s2">&quot;hosts&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="p">[</span><span class="s2">&quot;localhost&quot;</span><span class="p">]</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_config_params</span><span class="p">[</span><span class="s2">&quot;port&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_config_params</span><span class="p">[</span><span class="s2">&quot;vineyard_socket&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="s2">&quot;&quot;</span>
 
@@ -1291,13 +1351,49 @@
         <span class="sd">&quot;&quot;&quot;Start a graph learning engine.</span>
 
 <span class="sd">        Args:</span>
-<span class="sd">            nodes (list): The node types that will be used for gnn training.</span>
-<span class="sd">            edges (list): The edge types that will be used for gnn training.</span>
-<span class="sd">            gen_labels (list): Extra node and edge labels on original graph for gnn training.</span>
+<span class="sd">            graph (:class:`graphscope.framework.graph.GraphDAGNode`):</span>
+<span class="sd">                The graph to create learning instance.</span>
+<span class="sd">            nodes (list, optional): list of node types that will be used for GNN</span>
+<span class="sd">                training, the element of list can be `&quot;node_label&quot;` or</span>
+<span class="sd">                `(node_label, features)`. If the element of the list is a tuple and</span>
+<span class="sd">                contains selected feature list, it would use the selected</span>
+<span class="sd">                feature list for training. Default is None which use all type of</span>
+<span class="sd">                nodes and for the GNN training.</span>
+<span class="sd">            edges (list, optional): list of edge types that will be used for GNN</span>
+<span class="sd">                training. We use `(src_label, edge_label, dst_label)`</span>
+<span class="sd">                to specify one edge type. Default is None which use all type of</span>
+<span class="sd">                edges for GNN training.</span>
+<span class="sd">            gen_labels (list, optional): Alias node and edge labels and extract</span>
+<span class="sd">                train/validation/test dataset from original graph for supervised</span>
+<span class="sd">                GNN training. The detail is explained in the examples below.</span>
 
-<span class="sd">        Returns:</span>
-<span class="sd">            :class:`graphscope.learning.GraphDAGNode`:</span>
-<span class="sd">                An instance of learning graph that could be feed to the learning engine, evaluated in eager node.</span>
+<span class="sd">        Examples</span>
+<span class="sd">        --------</span>
+<span class="sd">        &gt;&gt;&gt; # Assume the input graph contains one label node `paper` and one edge label `link`.</span>
+<span class="sd">        &gt;&gt;&gt; features = [&quot;weight&quot;, &quot;name&quot;] # use properties &quot;weight&quot; and &quot;name&quot; as features</span>
+<span class="sd">        &gt;&gt;&gt; lg = sess.graphlearn(</span>
+<span class="sd">                graph,</span>
+<span class="sd">                nodes=[(&quot;paper&quot;, features)])  # use &quot;paper&quot; node and features for training</span>
+<span class="sd">                edges=[(&quot;paper&quot;, &quot;links&quot;, &quot;paper&quot;)]  # use the `paper-&gt;links-&gt;papers` edge type for training</span>
+<span class="sd">                gen_labels=[</span>
+<span class="sd">                    # split &quot;paper&quot; nodes into 100 pieces, and uses random 75 pieces (75%) as training dataset</span>
+<span class="sd">                    (&quot;train&quot;, &quot;paper&quot;, 100, (0, 75)),</span>
+<span class="sd">                    # split &quot;paper&quot; nodes into 100 pieces, and uses random 10 pieces (10%) as validation dataset</span>
+<span class="sd">                    (&quot;val&quot;, &quot;paper&quot;, 100, (75, 85)),</span>
+<span class="sd">                    # split &quot;paper&quot; nodes into 100 pieces, and uses random 15 pieces (15%) as test dataset</span>
+<span class="sd">                    (&quot;test&quot;, &quot;paper&quot;, 100, (85, 100)),</span>
+<span class="sd">                ]</span>
+<span class="sd">            )</span>
+<span class="sd">        Note that the training, validation and test datasets are not overlapping. And for unsupervised learning:</span>
+<span class="sd">        &gt;&gt;&gt; lg = sess.graphlearn(</span>
+<span class="sd">                graph,</span>
+<span class="sd">                nodes=[(&quot;paper&quot;, features)])  # use &quot;paper&quot; node and features for training</span>
+<span class="sd">                edges=[(&quot;paper&quot;, &quot;links&quot;, &quot;paper&quot;)]  # use the `paper-&gt;links-&gt;papers` edge type for training</span>
+<span class="sd">                gen_labels=[</span>
+<span class="sd">                    # split &quot;paper&quot; nodes into 100 pieces, and uses all pieces as training dataset</span>
+<span class="sd">                    (&quot;train&quot;, &quot;paper&quot;, 100, (0, 100)),</span>
+<span class="sd">                ]</span>
+<span class="sd">            )</span>
 <span class="sd">        &quot;&quot;&quot;</span>
         <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_session_id</span> <span class="o">!=</span> <span class="n">graph</span><span class="o">.</span><span class="n">session_id</span><span class="p">:</span>
             <span class="k">raise</span> <span class="ne">RuntimeError</span><span class="p">(</span>
@@ -1350,7 +1446,30 @@
         <span class="nb">setattr</span><span class="p">(</span><span class="n">mod</span><span class="p">,</span> <span class="s2">&quot;Graph&quot;</span><span class="p">,</span> <span class="n">graph</span><span class="p">)</span>
         <span class="nb">setattr</span><span class="p">(</span><span class="n">mod</span><span class="p">,</span> <span class="s2">&quot;DiGraph&quot;</span><span class="p">,</span> <span class="n">digraph</span><span class="p">)</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_nx</span> <span class="o">=</span> <span class="n">mod</span>
-        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_nx</span></div>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_nx</span>
+
+<div class="viewcode-block" id="Session.add_lib"><a class="viewcode-back" href="../../../reference/session.html#graphscope.Session.add_lib">[docs]</a>    <span class="k">def</span> <span class="nf">add_lib</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">resource_name</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">        add the specified resource to the k8s cluster from client machine.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">&quot;client: adding lib </span><span class="si">{}</span><span class="s2">&quot;</span><span class="o">.</span><span class="n">format</span><span class="p">(</span><span class="n">resource_name</span><span class="p">))</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">exists</span><span class="p">(</span><span class="n">resource_name</span><span class="p">):</span>
+            <span class="k">raise</span> <span class="ne">FileNotFoundError</span><span class="p">(</span>
+                <span class="s2">&quot;resource file not found in </span><span class="si">{}</span><span class="s2">.&quot;</span><span class="o">.</span><span class="n">format</span><span class="p">(</span><span class="n">resource_name</span><span class="p">)</span>
+            <span class="p">)</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">isfile</span><span class="p">(</span><span class="n">resource_name</span><span class="p">):</span>
+            <span class="k">raise</span> <span class="ne">RuntimeError</span><span class="p">(</span>
+                <span class="s2">&quot;Provided resource </span><span class="si">{}</span><span class="s2"> can not be found&quot;</span><span class="o">.</span><span class="n">format</span><span class="p">(</span><span class="n">resource_name</span><span class="p">)</span>
+            <span class="p">)</span>
+        <span class="c1"># pack into a gar file</span>
+        <span class="n">garfile</span> <span class="o">=</span> <span class="n">InMemoryZip</span><span class="p">()</span>
+        <span class="n">resource_reader</span> <span class="o">=</span> <span class="nb">open</span><span class="p">(</span><span class="n">resource_name</span><span class="p">,</span> <span class="s2">&quot;rb&quot;</span><span class="p">)</span>
+        <span class="n">bytes_</span> <span class="o">=</span> <span class="n">resource_reader</span><span class="o">.</span><span class="n">read</span><span class="p">()</span>
+        <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="n">bytes_</span><span class="p">)</span> <span class="o">&lt;=</span> <span class="mi">0</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="ne">KeyError</span><span class="p">(</span><span class="s2">&quot;Expect a non-empty file.&quot;</span><span class="p">)</span>
+        <span class="c1"># the uploaded file may be placed in the same directory</span>
+        <span class="n">garfile</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="s2">&quot;</span><span class="si">{}</span><span class="s2">&quot;</span><span class="o">.</span><span class="n">format</span><span class="p">(</span><span class="n">resource_name</span><span class="o">.</span><span class="n">split</span><span class="p">(</span><span class="s2">&quot;/&quot;</span><span class="p">)[</span><span class="o">-</span><span class="mi">1</span><span class="p">]),</span> <span class="n">bytes_</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_grpc_client</span><span class="o">.</span><span class="n">add_lib</span><span class="p">(</span><span class="n">garfile</span><span class="o">.</span><span class="n">read_bytes</span><span class="p">()</span><span class="o">.</span><span class="n">getvalue</span><span class="p">())</span></div></div>
 
 
 <span class="n">session</span> <span class="o">=</span> <span class="n">Session</span>
@@ -1389,6 +1508,7 @@
 <span class="sd">        - engine_params</span>
 <span class="sd">        - initializing_interactive_engine</span>
 <span class="sd">        - timeout_seconds</span>
+<span class="sd">        - dataset_download_retries</span>
 
 <span class="sd">    Args:</span>
 <span class="sd">        kwargs: dict</span>
@@ -1443,6 +1563,7 @@
 <span class="sd">        - engine_params</span>
 <span class="sd">        - initializing_interactive_engine</span>
 <span class="sd">        - timeout_seconds</span>
+<span class="sd">        - dataset_download_retries</span>
 
 <span class="sd">    Args:</span>
 <span class="sd">        key: str</span>
@@ -1477,14 +1598,19 @@
     <span class="k">return</span> <span class="n">_default_session_stack</span><span class="o">.</span><span class="n">get_controller</span><span class="p">(</span><span class="n">session</span><span class="p">)</span>
 
 
+<div class="viewcode-block" id="has_default_session"><a class="viewcode-back" href="../../../reference/generated/graphscope.has_default_session.html#graphscope.has_default_session">[docs]</a><span class="k">def</span> <span class="nf">has_default_session</span><span class="p">():</span>
+    <span class="sd">&quot;&quot;&quot;True if default session exists in current context.&quot;&quot;&quot;</span>
+    <span class="k">return</span> <span class="ow">not</span> <span class="n">_default_session_stack</span><span class="o">.</span><span class="n">empty</span><span class="p">()</span></div>
+
+
 <div class="viewcode-block" id="get_default_session"><a class="viewcode-back" href="../../../reference/generated/graphscope.get_default_session.html#graphscope.get_default_session">[docs]</a><span class="k">def</span> <span class="nf">get_default_session</span><span class="p">():</span>
     <span class="sd">&quot;&quot;&quot;Returns the default session for the current context.</span>
 
-<span class="sd">    Raises:</span>
-<span class="sd">        RuntimeError: Default session is not exist.</span>
+<span class="sd">    Note that a new session will be created if there is no</span>
+<span class="sd">    default session in current context.</span>
 
 <span class="sd">    Returns:</span>
-<span class="sd">        The default :class:`Session`.</span>
+<span class="sd">        The default :class:`graphscope.Session`.</span>
 <span class="sd">    &quot;&quot;&quot;</span>
     <span class="k">return</span> <span class="n">_default_session_stack</span><span class="o">.</span><span class="n">get_default</span><span class="p">()</span></div>
 
@@ -1509,6 +1635,9 @@
             <span class="n">sess</span> <span class="o">=</span> <span class="n">session</span><span class="p">(</span><span class="n">cluster_type</span><span class="o">=</span><span class="s2">&quot;hosts&quot;</span><span class="p">,</span> <span class="n">num_workers</span><span class="o">=</span><span class="mi">1</span><span class="p">)</span>
             <span class="n">sess</span><span class="o">.</span><span class="n">as_default</span><span class="p">()</span>
         <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">stack</span><span class="p">[</span><span class="o">-</span><span class="mi">1</span><span class="p">]</span>
+
+    <span class="k">def</span> <span class="nf">empty</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">return</span> <span class="nb">len</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">stack</span><span class="p">)</span> <span class="o">==</span> <span class="mi">0</span>
 
     <span class="k">def</span> <span class="nf">reset</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">stack</span> <span class="o">=</span> <span class="p">[]</span>
@@ -1578,10 +1707,10 @@
     <span class="k">return</span> <span class="n">get_default_session</span><span class="p">()</span><span class="o">.</span><span class="n">gremlin</span><span class="p">(</span><span class="n">graph</span><span class="p">,</span> <span class="n">engine_params</span><span class="p">)</span></div>
 
 
-<span class="k">def</span> <span class="nf">graphlearn</span><span class="p">(</span><span class="n">graph</span><span class="p">,</span> <span class="n">nodes</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">edges</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">gen_labels</span><span class="o">=</span><span class="kc">None</span><span class="p">):</span>
+<div class="viewcode-block" id="graphlearn"><a class="viewcode-back" href="../../../reference/generated/graphscope.graphlearn.html#graphscope.graphlearn">[docs]</a><span class="k">def</span> <span class="nf">graphlearn</span><span class="p">(</span><span class="n">graph</span><span class="p">,</span> <span class="n">nodes</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">edges</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">gen_labels</span><span class="o">=</span><span class="kc">None</span><span class="p">):</span>
     <span class="sd">&quot;&quot;&quot;Create a graph learning engine.</span>
 
-<span class="sd">    See params detail in :meth:`graphscope.Session.learning`</span>
+<span class="sd">    See params detail in :meth:`graphscope.Session.graphlearn`</span>
 
 <span class="sd">    Returns:</span>
 <span class="sd">        :class:`graphscope.learning.GraphDAGNode`:</span>
@@ -1597,7 +1726,7 @@
 <span class="sd">    &quot;&quot;&quot;</span>
     <span class="k">if</span> <span class="n">_default_session_stack</span><span class="o">.</span><span class="n">is_cleared</span><span class="p">():</span>
         <span class="k">raise</span> <span class="ne">RuntimeError</span><span class="p">(</span><span class="s2">&quot;No de fault session found.&quot;</span><span class="p">)</span>
-    <span class="k">return</span> <span class="n">get_default_session</span><span class="p">()</span><span class="o">.</span><span class="n">graphlearn</span><span class="p">(</span><span class="n">graph</span><span class="p">,</span> <span class="n">nodes</span><span class="p">,</span> <span class="n">edges</span><span class="p">,</span> <span class="n">gen_labels</span><span class="p">)</span>
+    <span class="k">return</span> <span class="n">get_default_session</span><span class="p">()</span><span class="o">.</span><span class="n">graphlearn</span><span class="p">(</span><span class="n">graph</span><span class="p">,</span> <span class="n">nodes</span><span class="p">,</span> <span class="n">edges</span><span class="p">,</span> <span class="n">gen_labels</span><span class="p">)</span></div>
 </pre></div>
 
            </div>
@@ -1607,7 +1736,7 @@
   <hr/>
 
   <div role="contentinfo">
-    <p>&#169; Copyright 2020-2023, Damo Academy, Alibaba Inc..</p>
+    <p>&#169; Copyright 2020-2023, DAMO Academy, Alibaba Inc..</p>
   </div>
 
   Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
