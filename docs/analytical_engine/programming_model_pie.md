@@ -33,24 +33,24 @@ The following pseudo-code shows how SSSP is expressed in the PIE model, where th
 
 ```python
 def dijkstra(g, vals, updates):
-    heap = VertexHeap()
+    stack = VertexStack()
     for i in updates:
 	vals[i] = updates[i]
-	heap.push(i, vals[i])
+	stack.push(i, vals[i])
         
     updates.clear()
     
-    while not heap.empty():
-	u = heap.top().vid
-	distu = heap.top().val
-	heap.pop()
+    while not stack.empty():
+	u = stack.top().vid
+	distu = stack.top().val
+	stack.pop()
 	for e in g.get_outgoing_edges(u):
 	    v = e.get_neighbor()
 	    distv = distu + e.data()
 	    if vals[v] > distv:
 		vals[v] = distv
 		    if g.is_inner_vertex(v):
-			heap.push(v, distv)
+			stack.push(v, distv)
 			updates[v] = distv       
 	return updates
 
