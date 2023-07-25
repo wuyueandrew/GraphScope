@@ -25,9 +25,9 @@
 #include "grape/worker/comm_spec.h"
 #include "vineyard/common/util/blocking_queue.h"
 
-#include "graphscope/proto/error_codes.pb.h"
-#include "graphscope/proto/graph_def.pb.h"
-#include "graphscope/proto/types.pb.h"
+#include "proto/error_codes.pb.h"
+#include "proto/graph_def.pb.h"
+#include "proto/types.pb.h"
 
 namespace bl = boost::leaf;
 
@@ -176,8 +176,8 @@ class Dispatcher {
   bool running_;
   grape::CommSpec comm_spec_;
   std::shared_ptr<Subscriber> subscriber_;
-  vineyard::BlockingQueue<std::shared_ptr<CommandDetail>> cmd_queue_;
-  vineyard::BlockingQueue<std::vector<DispatchResult>> result_queue_;
+  vineyard::PCBlockingQueue<std::shared_ptr<CommandDetail>> cmd_queue_;
+  vineyard::PCBlockingQueue<std::vector<DispatchResult>> result_queue_;
 };
 
 }  // namespace gs

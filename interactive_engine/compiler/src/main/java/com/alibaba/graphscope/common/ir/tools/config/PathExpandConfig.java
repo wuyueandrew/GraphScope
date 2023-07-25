@@ -134,7 +134,7 @@ public class PathExpandConfig {
                             (GraphOptCluster) innerBuilder.getCluster(),
                             innerBuilder.getRelOptSchema());
             this.pathOpt = GraphOpt.PathExpandPath.ARBITRARY;
-            this.resultOpt = GraphOpt.PathExpandResult.EndV;
+            this.resultOpt = GraphOpt.PathExpandResult.END_V;
         }
 
         public Builder expand(ExpandConfig config) {
@@ -163,7 +163,7 @@ public class PathExpandConfig {
                                 config.getOpt(),
                                 innerBuilder.getTableConfig(
                                         config.getLabels(), GraphOpt.Source.VERTEX),
-                                config.getAlias()); // hack ways: to be consistent with runtime
+                                AliasInference.DEFAULT_NAME);
                 // (the alias of endV is given in the getV
                 // base)
                 innerBuilder.push(this.getV);

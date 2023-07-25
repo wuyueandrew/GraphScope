@@ -16,10 +16,15 @@
 [![FAQ-zh](https://img.shields.io/badge/-FAQ%E4%B8%AD%E6%96%87-blue?logo=Read%20The%20Docs)](https://graphscope.io/docs/zh/frequently_asked_questions.html)
 [![README-zh](https://shields.io/badge/README-%E4%B8%AD%E6%96%87-blue)](README-zh.md)
 
-GraphScope is a unified distributed graph computing platform that provides a one-stop environment for performing diverse graph operations on a cluster of computers through a user-friendly Python interface. GraphScope makes multi-staged processing of large-scale graph data on compute clusters simple by combining several important pieces of Alibaba technology: including [GRAPE](https://github.com/alibaba/libgrape-lite), [MaxGraph](interactive_engine/), and [Graph-Learn](https://github.com/alibaba/graph-learn) (GL) for analytics, interactive, and graph neural networks (GNN) computation, respectively, and the [Vineyard](https://github.com/v6d-io/v6d) store that offers efficient in-memory data transfers.
+🎉 See our ongoing [GraphScope Flex](flex/): a LEGO-inspired, modular, and user-friendly GraphScope evolution. 🎉
+
+GraphScope is a unified distributed graph computing platform that provides a one-stop environment for performing diverse graph operations on a cluster of computers through a user-friendly Python interface. GraphScope makes multi-staged processing of large-scale graph data on compute clusters simply by combining several important pieces of Alibaba technology: including [GRAPE](https://github.com/alibaba/libgrape-lite), [MaxGraph](interactive_engine/), and [Graph-Learn](https://github.com/alibaba/graph-learn) (GL) for analytics, interactive, and graph neural networks (GNN) computation, respectively, and the [Vineyard](https://github.com/v6d-io/v6d) store that offers efficient in-memory data transfers.
 
 Visit our website at [graphscope.io](https://graphscope.io) to learn more.
 
+## Latest News
+- [20/07/2023] GraphScope achieved record-breaking results on the [LDBC Social Network Benchmark Interactive workload](https://ldbcouncil.org/benchmarks/snb-interactive/), with a 2.45× higher throughput on SF300 than the previous record holder! 🏆
+- [04/07/2023] GraphScope Flex tech preview released with [v0.23.0](https://github.com/alibaba/GraphScope/releases/tag/v0.23.0)
 ## Table of Contents
 
 - [Getting Started](#getting-started)
@@ -47,7 +52,7 @@ Visit our website at [graphscope.io](https://graphscope.io) to learn more.
 
 We provide a [Playground](https://try.graphscope.app) with a managed JupyterLab. [Try GraphScope](https://try.graphscope.app) straight away in your browser!
 
-GraphScope supports run in standalone mode or on clusters managed by [Kubernetes](https://kubernetes.io/) within containers. For quickly getting started,
+GraphScope supports running in standalone mode or on clusters managed by [Kubernetes](https://kubernetes.io/) within containers. For quickly getting started,
 let's begin with the standalone mode.
 
 
@@ -59,7 +64,7 @@ GraphScope pre-compiled package is distributed as a python package and can be ea
 pip3 install graphscope
 ```
 
-Note that `graphscope` requires `Python` >= 3.8 and `pip` >= 19.3. The package is built for and tested on the most popular Linux (Ubuntu 18.04+ / CentOS 7+) and macOS (version 10.15+) distributions. For Windows users, you may want to install Ubuntu on WSL2 to use this package.
+Note that `graphscope` requires `Python` >= 3.8 and `pip` >= 19.3. The package is built for and tested on the most popular Linux (Ubuntu 20.04+ / CentOS 7+) and macOS 11+ (Intel) / macOS 12+ (Apple silicon) distributions. For Windows users, you may want to install Ubuntu on WSL2 to use this package.
 
 Next, we will walk you through a concrete example to illustrate how GraphScope can be used by data scientists to effectively analyze large graphs.
 
@@ -228,15 +233,15 @@ train_gcn(lg, node_type="paper", edge_type="cites",
 )
 ```
 
-A python script with the entire process is availabe [here](https://colab.research.google.com/github/alibaba/GraphScope/blob/main/tutorials/1_node_classification_on_citation.ipynb), you may try it out by yourself.
+A Python script with the entire process is available [here](https://colab.research.google.com/github/alibaba/GraphScope/blob/main/tutorials/1_node_classification_on_citation.ipynb), you may try it out by yourself.
 
 
 ## Processing Large Graph on Kubernetes Cluster
 
 GraphScope is designed for processing large graphs, which are usually hard to fit in the memory of a single machine.
-With [Vineyard](https://github.com/v6d-io/v6d) as the distributed in-memory data manager, GraphScope supports run on a cluster managed by Kubernetes(k8s).
+With [Vineyard](https://github.com/v6d-io/v6d) as the distributed in-memory data manager, GraphScope supports running on a cluster managed by Kubernetes(k8s).
 
-To continue this tutorial, please ensure that you have a k8s managed cluster and know the credentials for the cluster.
+To continue this tutorial, please ensure that you have a k8s-managed cluster and know the credentials for the cluster.
 (e.g., address of k8s API server, usually stored a `~/.kube/config` file.)
 
 Alternatively, you can set up a local k8s cluster for testing with [Kind](https://kind.sigs.k8s.io/). We provide a script for setup this environment.
@@ -316,7 +321,7 @@ sess.close()
 
 This operation will notify the backend engines and vineyard
 to safely unload graphs and their applications,
-Then, the coordinator will dealloc all the applied resources in the k8s cluster.
+Then, the coordinator will release all the applied resources in the k8s cluster.
 
 Please note that we have not hardened this release for production use and it lacks important security features such as authentication and encryption, and therefore **it is NOT recommended for production use (yet)!**
 
@@ -347,7 +352,7 @@ sudo make install
 
 ### Building Docker images
 
-GraphScope ships with a [Dockerfile](k8s/graphscope.Dockerfile) that can build docker images for releasing. The images are built on a `builder` image with all dependencies installed and copied to
+GraphScope ships with a [Dockerfile](k8s/dockerfiles/graphscope-dev.Dockerfile) that can build docker images for releasing. The images are built on a `builder` image with all dependencies installed and copied to
 a `runtime-base` image. To build images with latest version of GraphScope, go to the `k8s/internal` directory under root directory and run this command.
 
 ```bash

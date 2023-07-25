@@ -101,9 +101,9 @@ class Connection:
         self._write_service_stub = write_service_pb2_grpc.ClientWriteStub(channel)
         self._client_id = None
         self._metadata = self._encode_metadata(username, password)
-        graph_url = "ws://%s/gremlin" % self._gremlin_endpoint
+        gremlin_url = f"ws://{self._gremlin_endpoint}/gremlin"
         self._conn = DriverRemoteConnection(
-            graph_url, "g", username=username, password=password
+            gremlin_url, "g", username=username, password=password
         )
 
     def _get_channel_options(self):
@@ -154,20 +154,24 @@ class Connection:
     def _get_client_id(self):
         if self._client_id is None:
             request = write_service_pb2.GetClientIdRequest()
-            response = self._write_service_stub.getClientId(request)
+            response = self._write_service_stub.getClientId(
+                request, metadata=self._metadata
+            )
             self._client_id = response.client_id
         return self._client_id
 
     def batch_write(self, request):
         request.client_id = self._get_client_id()
-        response = self._write_service_stub.batchWrite(request)
+        response = self._write_service_stub.batchWrite(request, metadata=self._metadata)
         return response.snapshot_id
 
     def remote_flush(self, snapshot_id, timeout_ms=3000):
         request = write_service_pb2.RemoteFlushRequest()
         request.snapshot_id = snapshot_id
         request.wait_time_ms = timeout_ms
-        response = self._write_service_stub.remoteFlush(request)
+        response = self._write_service_stub.remoteFlush(
+            request, metadata=self._metadata
+        )
         return response.success
 
     def _encode_metadata(self, username, password):

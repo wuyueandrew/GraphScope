@@ -1,6 +1,6 @@
 # Graph Interactive Workloads
 Graph interactive workloads primarily focus on exploring complex graph structures in an
-**interative** manner. There're two common interactive workloads, namely
+**interactive** manner. There're two common interactive workloads, namely
 - Graph traversal: This type of workload involves traversing the graph from a set of source vertices
   while satisfying the constraints on the vertices and edges that the traversal passes. Graph
   traversal differs from the [analytics](./graph_analytics_workloads.md) workload as it typically accesses a small
@@ -9,15 +9,15 @@ Graph interactive workloads primarily focus on exploring complex graph structure
   all occurrences (or instances) of the pattern in the graph. Pattern matching often involves relational operations to project, order and group the matched instances.
 
 In GraphScope, the Graph Interactive Engine (GIE) has been developed to handle such interactive workloads,
-which provides widely used query languages, such as Gremlin, that allow  users to easily
+which provides widely used query languages, such as Gremlin or Cypher, that allow users to easily
 express both graph traversal and pattern matching queries. These queries will be executed with massive
 parallelism in a cluster of machines, providing efficient and scalable solutions to graph interactive
 workloads.
 
 ## Tinkerpop and Gremlin
 Apache [TinkerPop](https://tinkerpop.apache.org) is an open framework for developing interactive
-graph applications using the [Gremlin](https://tinkerpop.apache.org/gremlin.html) query language. We have implemented TinkerPop’s Gremlin Server
-interface and attempted to support the official traversal steps of Gremlin in GIE. As a result, Gremlin users can easily get started with GIE through the existing TinkerPop ecosystem, including the language wrappers of Python and Gremlin's console. For language features, we support both the imperative graph traversal and declarative pattern matching in Gremlin for handling the graph traversal and pattern matching workloads in the interactive context, respectively.
+graph applications using the [Gremlin](https://tinkerpop.apache.org/gremlin.html) query language. We have implemented TinkerPop’s Gremlin Server interface and attempted to support the official traversal steps of Gremlin in GIE. As a result, Gremlin users can easily get started with GIE through the existing [TinkerPop ecosystem](../interactive_engine/tinkerpop_eco.md), including the language wrappers of Python and Gremlin's console.
+For language features, we support both the imperative graph traversal and declarative pattern matching in Gremlin for handling the graph traversal and pattern matching workloads in the interactive context, respectively.
 
 
 ### Graph Traversal
@@ -87,28 +87,14 @@ g.V().match(
 
 The pattern matching query is declarative in the sense that users only describes the pattern using the `match()` step, while the engine determine how to execute the query (i.e. the execution plan) at runtime according to a pre-defined cost model. For example, a [worst-case optimal](https://vldb.org/pvldb/vol12/p1692-mhedhbi.pdf) execution plan may first compute the matches of `v1` and `v2`, and then intersect the neighbors of `v1` and `v2` as the matches of `v3`.
 
-### Compatibility with TinkerPop
-GIE supports the property graph model and Gremlin traversal language defined by Apache TinkerPop,
-and provides a Gremlin Websockets server that supports TinkerPop version 3.4.
-In addition to the original Gremlin queries, we further introduce some syntactic sugars to allow
-more succinct expression. However, because of the distributed nature and practical considerations, it is worth to notice the following limitations of our implementations of Gremlin.
+## Neo4j and Cypher
+[Neo4j](https://neo4j.com/docs/) is a popular graph database management system known for its native graph processing capabilities. It provides an efficient and scalable solution for storing, querying, and analyzing graph data. One of the key components of Neo4j is the query language [Cypher](https://neo4j.com/docs/cypher-manual/current/introduction/), which is specifically designed for working with graph data. We have fully embraced the power of Neo4j by implementing essential and impactful operators in Cypher, which enables users to leverage the expressive capabilities of Cypher for querying and manipulating graph data. Additionally, we have integrated Neo4j's Bolt server into our system, allowing Cypher users to submit their queries using the open SDK. As a result, Cypher users can easily get started with GIE through the existing [Neo4j ecosystem](../interactive_engine/neo4j_eco.md), including the language wrappers of Python and Cypher-Shell.
 
-- Functionalities
-  - Graph mutations.
-  - Lambda and Groovy expressions and functions, such as the `.map{<expression>}`, the `.by{<expression>}`, and the `.filter{<expression>}` functions, and `System.currentTimeMillis()`, etc. By the way, we have provided the `expr()` [syntactic sugar](../interactive_engine/supported_gremlin_steps.md) to handle complex expressions.
-  - Gremlin traversal strategies.
-  - Transactions.
-  - Secondary index isn’t currently available. Primary keys will be automatically indexed.
-
-- Gremlin Steps: See [here](../interactive_engine/supported_gremlin_steps.md) for a complete supported/unsupported list of Gremlin.
-
-## Property Graph Constraints
-The current release of GIE supports two graph stores: one leverages [Vineyard](https://v6d.io/) to supply an in-memory store for immutable
-graph data, and the other, called groot, is developed on top of [RocksDB](https://rocksdb.org/) that also provides real-time write and data consistency via [snapshot isolation](https://en.wikipedia.org/wiki/Snapshot_isolation). Both stores support graph data being partitioned across multiple servers. By design, the following constraints are introduced (on both stores):
- - Each graph has a schema comprised of the edge labels, property keys, and vertex labels used therein.
- - Each vertex type or label has a primary key (property) defined by user. The system will automatically
-  generate a String-typed unique identifier for each vertex and edge, encoding both the label information
-  as well as user-defined primary keys (for vertex).
- - Each vertex or edge property can be of the following data types: `int`, `long`, `float`, `double`,
-  `String`, `List<int>`, `List<long>`, and `List<String>`.
-
+### Pattern Matching
+ The `MATCH` operator in Cypher provides a declarative syntax that allows you to express graph patterns in a concise and intuitive manner. The pattern-based approach aligns well with the structure of graph data, making it easier to understand and write queries. This helps both beginners and experienced users to quickly grasp and work with complex graph patterns. Moreover, The `MATCH` operator allows you to combine multiple patterns, optional patterns, and logical operators to create complex queries, which empowers you to express complex relationships and conditions within a single query. It can be written in Cypher for the above `Triangle` example:
+```bash
+Match (v1)-[:Knows]-(v2),
+      (v1)-[:Purchases]->(v3),
+      (v2)-[:Purchases]->(v3)
+Return DISTINCT v1, v2, v3;
+```

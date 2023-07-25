@@ -65,9 +65,9 @@
 #include "core/server/command_detail.h"
 #include "core/server/rpc_utils.h"
 #include "core/utils/mpi_utils.h"
-#include "graphscope/proto/attr_value.pb.h"
-#include "graphscope/proto/graph_def.pb.h"
-#include "graphscope/proto/types.pb.h"
+#include "proto/attr_value.pb.h"
+#include "proto/graph_def.pb.h"
+#include "proto/types.pb.h"
 
 namespace bl = boost::leaf;
 
@@ -118,6 +118,7 @@ bl::result<rpc::graph::GraphDefPb> GrapeInstance::loadGraph(
     graph_def.set_key(graph_name);
     graph_def.set_directed(directed);
     graph_def.set_graph_type(rpc::graph::DYNAMIC_PROPERTY);
+    graph_def.set_compact_edges(false);
     // dynamic graph doesn't have a vineyard id
     gs::rpc::graph::MutableGraphInfoPb graph_info;
     if (graph_def.has_extension()) {
@@ -202,6 +203,21 @@ bl::result<void> GrapeInstance::unloadGraph(const rpc::GSParams& params) {
   return object_manager_.RemoveObject(graph_name);
 }
 
+bl::result<void> GrapeInstance::archiveGraph(const rpc::GSParams& params) {
+  if (params.HasKey(rpc::VINEYARD_ID)) {
+    BOOST_LEAF_AUTO(type_sig, params.Get<std::string>(rpc::TYPE_SIGNATURE));
+    BOOST_LEAF_AUTO(frag_group_id, params.Get<int64_t>(rpc::VINEYARD_ID));
+    BOOST_LEAF_AUTO(graph_utils,
+                    object_manager_.GetObject<PropertyGraphUtils>(type_sig));
+    bool exists = false;
+    VY_OK_OR_RAISE(client_->Exists(frag_group_id, exists));
+    if (exists) {
+      graph_utils->ArchiveGraph(frag_group_id, comm_spec_, *client_, params);
+    }
+  }
+  return {};
+}
+
 bl::result<std::string> GrapeInstance::loadApp(const rpc::GSParams& params) {
   BOOST_LEAF_AUTO(algo_name, params.Get<std::string>(rpc::APP_ALGO));
   std::string app_name = "app_" + algo_name + "_" + generateId();
@@ -271,7 +287,7 @@ bl::result<rpc::graph::GraphDefPb> GrapeInstance::projectToSimple(
     return graph_def;
   }
   VY_OK_OR_RAISE(client_->Persist(vy_info.vineyard_id()));
-  // contruct fragment group
+  // construct fragment group
   BOOST_LEAF_AUTO(frag_group_id,
                   vineyard::ConstructFragmentGroup(
                       *client_, vy_info.vineyard_id(), comm_spec_));
@@ -302,7 +318,11 @@ bl::result<std::string> GrapeInstance::query(const rpc::GSParams& params,
                   app->Query(worker.get(), query_args, context_key, wrapper));
   std::string context_type;
   std::string context_schema;
-  if (ctx_wrapper != nullptr) {
+  if (ctx_wrapper == nullptr) {
+    RETURN_GS_ERROR(
+        vineyard::ErrorCode::kIllegalStateError,
+        "Query returns a null context wrapper without useful error message");
+  } else {
     context_type = ctx_wrapper->context_type();
     context_schema = ctx_wrapper->schema();
     BOOST_LEAF_CHECK(object_manager_.PutObject(ctx_wrapper));
@@ -1270,6 +1290,10 @@ bl::result<std::shared_ptr<DispatchResult>> GrapeInstance::OnReceive(
     BOOST_LEAF_AUTO(arc, reportGraph(params));
     r->set_data(*arc, DispatchResult::AggregatePolicy::kPickFirstNonEmpty,
                 true);
+    break;
+  }
+  case rpc::ARCHIVE_GRAPH: {
+    BOOST_LEAF_CHECK(archiveGraph(params));
     break;
   }
   case rpc::PROJECT_GRAPH: {

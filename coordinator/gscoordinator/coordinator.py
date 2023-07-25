@@ -59,12 +59,12 @@ from gscoordinator.dag_manager import DAGManager
 from gscoordinator.dag_manager import GSEngine
 from gscoordinator.kubernetes_launcher import KubernetesClusterLauncher
 from gscoordinator.monitor import Monitor
-from gscoordinator.object_manager import InteractiveQueryManager
+from gscoordinator.object_manager import InteractiveInstanceManager
 from gscoordinator.object_manager import LearningInstanceManager
 from gscoordinator.object_manager import ObjectManager
 from gscoordinator.op_executor import OperationExecutor
 from gscoordinator.utils import GS_GRPC_MAX_MESSAGE_LENGTH
-from gscoordinator.utils import check_gremlin_server_ready
+from gscoordinator.utils import check_server_ready
 from gscoordinator.utils import create_single_op_dag
 from gscoordinator.utils import str2bool
 from gscoordinator.version import __version__
@@ -172,20 +172,23 @@ class CoordinatorServiceServicer(
 
         # dangling check
         self._dangling_timeout_seconds = dangling_timeout_seconds
+        self._comm_timeout_seconds = 120
+        self._poll_timeout_seconds = 2
         self._dangling_detecting_timer = None
         self._cleanup_instance = False
-        self._set_dangling_timer(cleanup_instance=True)
-
-        self._operation_executor: OperationExecutor = None
 
         self._session_id = self._generate_session_id()
         self._launcher.set_session_workspace(self._session_id)
-
-        self._operation_executor = OperationExecutor(
-            self._session_id, self._launcher, self._object_manager
-        )
         if not self._launcher.start():
             raise RuntimeError("Coordinator launching instance failed.")
+
+        self._operation_executor: OperationExecutor = OperationExecutor(
+            self._session_id, self._launcher, self._object_manager
+        )
+
+        # the dangling timer should be initialized after the launcher started,
+        # otherwise there would be a deadlock if `self._launcher.start()` failed.
+        self._set_dangling_timer(cleanup_instance=True)
 
         # a lock that protects the coordinator
         self._lock = threading.RLock()
@@ -236,12 +239,16 @@ class CoordinatorServiceServicer(
         self._connected = True
         # Cleanup after timeout seconds
         self._dangling_timeout_seconds = request.dangling_timeout_seconds
+        # other timeout seconds
+        self._comm_timeout_seconds = getattr(request, "comm_timeout_seconds", 120)
+        self._poll_timeout_seconds = getattr(request, "poll_timeout_seconds", 2)
         # If true, also delete graphscope instance (such as pods) in closing process
         self._cleanup_instance = request.cleanup_instance
 
         # Session connected, fetch logs via gRPC.
         self._streaming_logs = True
         sys.stdout.drop(False)
+        sys.stderr.drop(False)
 
         return message_pb2.ConnectSessionResponse(
             session_id=self._session_id,
@@ -269,6 +276,7 @@ class CoordinatorServiceServicer(
 
         # Session closed, stop streaming logs
         sys.stdout.drop(True)
+        sys.stderr.drop(True)
         self._streaming_logs = False
         return message_pb2.CloseSessionResponse()
 
@@ -379,7 +387,9 @@ class CoordinatorServiceServicer(
     def FetchLogs(self, request, context):
         while self._streaming_logs:
             try:
-                info_message, error_message = self._pipe_merged.poll(timeout=2)
+                info_message, error_message = self._pipe_merged.poll(
+                    timeout=self._poll_timeout_seconds
+                )
             except queue.Empty:
                 info_message, error_message = "", ""
             except Exception as e:
@@ -438,33 +448,53 @@ class CoordinatorServiceServicer(
             return ""
 
         # frontend endpoint pattern
-        FRONTEND_PATTERN = re.compile("(?<=FRONTEND_ENDPOINT:).*$")
+        FRONTEND_GREMLIN_PATTERN = re.compile("(?<=FRONTEND_GREMLIN_ENDPOINT:).*$")
+        FRONTEND_CYPHER_PATTERN = re.compile("(?<=FRONTEND_CYPHER_ENDPOINT:).*$")
         # frontend external endpoint, for clients that are outside of cluster to connect
         # only available in kubernetes mode, exposed by NodePort or LoadBalancer
-        FRONTEND_EXTERNAL_PATTERN = re.compile("(?<=FRONTEND_EXTERNAL_ENDPOINT:).*$")
+        FRONTEND_EXTERNAL_GREMLIN_PATTERN = re.compile(
+            "(?<=FRONTEND_EXTERNAL_GREMLIN_ENDPOINT:).*$"
+        )
+        FRONTEND_EXTERNAL_CYPHER_PATTERN = re.compile(
+            "(?<=FRONTEND_EXTERNAL_CYPHER_ENDPOINT:).*$"
+        )
 
         # create instance
         object_id = request.object_id
         schema_path = request.schema_path
+        params = request.params
         try:
-            proc = self._launcher.create_interactive_instance(object_id, schema_path)
-            gie_manager = InteractiveQueryManager(object_id)
+            proc = self._launcher.create_interactive_instance(
+                object_id, schema_path, params
+            )
+            gie_manager = InteractiveInstanceManager(object_id)
             # Put it to object_manager to ensure it could be killed during coordinator cleanup
             # If coordinator is shutdown by force when creating interactive instance
             self._object_manager.put(object_id, gie_manager)
             # 60 seconds is enough, see also GH#1024; try 120
             # already add errs to outs
-            outs, _ = proc.communicate(timeout=120)  # throws TimeoutError
+            outs, _ = proc.communicate(
+                timeout=self._comm_timeout_seconds
+            )  # throws TimeoutError
             return_code = proc.poll()
             if return_code != 0:
                 raise RuntimeError(f"Error code: {return_code}, message {outs}")
-            # match frontend endpoint and check for ready
-            endpoint = _match_frontend_endpoint(FRONTEND_PATTERN, outs)
+            # match frontend endpoints and check for ready
+            gremlin_endpoint = _match_frontend_endpoint(FRONTEND_GREMLIN_PATTERN, outs)
+            cypher_endpoint = _match_frontend_endpoint(FRONTEND_CYPHER_PATTERN, outs)
+            logger.debug("Got endpoints: %s %s", gremlin_endpoint, cypher_endpoint)
             # coordinator use internal endpoint
-            gie_manager.set_endpoint(endpoint)
-            if check_gremlin_server_ready(endpoint):  # throws TimeoutError
+            gie_manager.set_endpoint(gremlin_endpoint)
+            if check_server_ready(
+                gremlin_endpoint, server="gremlin"
+            ) and check_server_ready(
+                cypher_endpoint, server="cypher"
+            ):  # throws TimeoutError
                 logger.info(
-                    "Built interactive frontend %s for graph %ld", endpoint, object_id
+                    "Built interactive frontend gremlin: %s & cypher: %s for graph %ld",
+                    gremlin_endpoint,
+                    cypher_endpoint,
+                    object_id,
                 )
         except Exception as e:
             context.set_code(grpc.StatusCode.ABORTED)
@@ -474,11 +504,25 @@ class CoordinatorServiceServicer(
             self._launcher.close_interactive_instance(object_id)
             self._object_manager.pop(object_id)
             return message_pb2.CreateInteractiveInstanceResponse()
-        external_endpoint = _match_frontend_endpoint(FRONTEND_EXTERNAL_PATTERN, outs)
+        external_gremlin_endpoint = _match_frontend_endpoint(
+            FRONTEND_EXTERNAL_GREMLIN_PATTERN, outs
+        )
+        external_cypher_endpoint = _match_frontend_endpoint(
+            FRONTEND_EXTERNAL_CYPHER_PATTERN, outs
+        )
+        logger.debug(
+            "Got external endpoints: %s %s",
+            external_gremlin_endpoint,
+            external_cypher_endpoint,
+        )
+
         # client use external endpoint (k8s mode), or internal endpoint (standalone mode)
-        endpoint = external_endpoint or endpoint
+        gremlin_endpoint = external_gremlin_endpoint or gremlin_endpoint
+        cypher_endpoint = external_cypher_endpoint or cypher_endpoint
         return message_pb2.CreateInteractiveInstanceResponse(
-            gremlin_endpoint=endpoint, object_id=object_id
+            gremlin_endpoint=gremlin_endpoint,
+            cypher_endpoint=cypher_endpoint,
+            object_id=object_id,
         )
 
     def CreateLearningInstance(self, request, context):
@@ -863,6 +907,12 @@ def parse_sys_args():
         help="Mount the aliyun dataset bucket as a volume by ossfs.",
     )
     parser.add_argument(
+        "--k8s_deploy_mode",
+        type=str,
+        default="eager",
+        help="The deploying mode of graphscope, eager or lazy.",
+    )
+    parser.add_argument(
         "--monitor",
         type=str2bool,
         nargs="?",
@@ -930,6 +980,7 @@ def get_launcher(args):
             with_mars=args.k8s_with_mars,
             enabled_engines=args.k8s_enabled_engines,
             dataset_proxy=args.dataset_proxy,
+            deploy_mode=args.k8s_deploy_mode,
         )
     elif args.cluster_type == "hosts":
         launcher = LocalLauncher(
@@ -982,9 +1033,9 @@ def start_server(launcher, args):
             logger.info(
                 "Coordinator monitor server listen at 0.0.0.0:%d", args.monitor_port
             )
-        except Exception as e:
-            logger.error(
-                "Failed to start monitor server 0.0.0.0:%d : %s", args.monitor_port, e
+        except Exception:  # noqa: E722, pylint: disable=broad-except
+            logger.exception(
+                "Failed to start monitor server 0.0.0.0:%d", args.monitor_port
             )
 
     # handle SIGTERM signal

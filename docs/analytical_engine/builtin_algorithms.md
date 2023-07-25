@@ -9,6 +9,7 @@ Here is the full list of supported built-in algorithms:
 - [Average Degree Connectivity](https://graphscope.io/docs/latest/analytical_engine/builtin_algorithms.html#average-degree-connectivity)
 - [Betweenness Centrality](https://graphscope.io/docs/latest/analytical_engine/builtin_algorithms.html#betweenness-centrality)
 - [Breadth-First Search (BFS)](https://graphscope.io/docs/latest/analytical_engine/builtin_algorithms.html#breadth-first-search)
+- [CDLP](https://graphscope.io/docs/latest/analytical_engine/builtin_algorithms.html#cdlp)
 - [Closeness Centrality](https://graphscope.io/docs/latest/analytical_engine/builtin_algorithms.html#closeness-centrality)
 - [Clustering](https://graphscope.io/docs/latest/analytical_engine/builtin_algorithms.html#clustering)
 - [Degree Assortativity Coefficient](https://graphscope.io/docs/latest/analytical_engine/builtin_algorithms.html#degree-assortativity-coefficient)
@@ -20,10 +21,12 @@ Here is the full list of supported built-in algorithms:
 - [K-Core](https://graphscope.io/docs/latest/analytical_engine/builtin_algorithms.html#k-core)
 - [K-Shell](https://graphscope.io/docs/latest/analytical_engine/builtin_algorithms.html#k-shell)
 - [Label Propagation Algorithm (LPA)](https://graphscope.io/docs/latest/analytical_engine/builtin_algorithms.html#label-propagation-algorithm)
+- [LCC](https://graphscope.io/docs/latest/analytical_engine/builtin_algorithms.html#lcc)
 - [PageRank](https://graphscope.io/docs/latest/analytical_engine/builtin_algorithms.html#pagerank)
 - [Sampling Path](https://graphscope.io/docs/latest/analytical_engine/builtin_algorithms.html#sampling-path)
 - [Single-Source Shortest Paths (SSSP)](https://graphscope.io/docs/latest/analytical_engine/builtin_algorithms.html#single-source-shortest-paths)
 - [VoteRank](https://graphscope.io/docs/latest/analytical_engine/builtin_algorithms.html#voterank)
+- [WCC](https://graphscope.io/docs/latest/analytical_engine/builtin_algorithms.html#wcc)
 
 ## All Pairs Shortest Path Length
 
@@ -83,6 +86,18 @@ Compute a list of vertices in breadth-first search from source.
 :type source: int
 ```
 
+## CDLP
+
+Evaluate Community Detection with Label Propagation, Also known as LPA.
+See [LPA](https://graphscope.io/docs/latest/analytical_engine/builtin_algorithms.html#label-propagation-algorithm)
+
+```{py:function} cdlp(max_round=10)
+
+Evaluate Community Detection with Label Propagation
+:param max_round: Maximum rounds, default to 10
+:type max_round: int
+```
+
 ## Closeness Centrality
 
 The original closeness centrality of a vertex *v* is the reciprocal of the average shortest path distance to *v* over all n-1 reachable nodes. Wasserman and Faust proposed an improved formula for graphs with more than one connected component. The result is “a ratio of the fraction of actors in the group who are reachable, to the average distance” from the reachable actors. 
@@ -97,7 +112,7 @@ Compute closeness centrality for vertices.
 
 ## Clustering
 
-The clustering algorithm is to compute the clustering coefficient for each vertex of a graph. The clustering coefficient of a vertex in a graph quantifies how close its neighbours are to being a clique (complete graph).
+The clustering algorithm is to compute the clustering coefficient for each vertex of a graph. The clustering coefficient of a vertex in a graph quantifies how close its neighbors are to being a clique (complete graph).
 
 ```{py:function} clustering()
 
@@ -230,6 +245,15 @@ Compute the label of each vertex in the graph.
 :type max_round: int
 ```
 
+## LCC
+
+The LCC is aims to compute the local clustering coefficient, follow the specification of LDBC
+
+```{py:function} lcc()
+
+Compute the local clustering coefficient for each vertex in the graph.
+```
+
 ## PageRank
 
 PageRank is a way of measuring the importance of each vertices in a graph. The PageRank algorithm exists in many variants, the PageRank in GAE follows [the PageRank implementation of NetworkX](https://networkx.org/documentation/networkx-1.7/reference/generated/networkx.algorithms.link_analysis.pagerank_alg.pagerank.html).
@@ -275,7 +299,7 @@ Compute shortest paths from a source vertex in the graph.
 
 ## VoteRank
 
-VoteRank is to measure a ranking of the vertices in a graph based on a voting scheme. With VoteRank, all vertices vote for each of its in-neighbours and the vertices with the top highest votes is elected iteratively. 
+VoteRank is to measure a ranking of the vertices in a graph based on a voting scheme. With VoteRank, all vertices vote for each of its in-neighbors and the vertices with the top highest votes is elected iteratively. 
 
 ```{py:function} voterank(num_of_nodes)
 
@@ -283,4 +307,13 @@ Select a list of influential vertices in a graph using VoteRank algorithm.
 
 :param num_of_nodes: the number of ranked vertices to extract
 :type num_of_nodes: int
+```
+
+## WCC
+
+Compute the weakly connected component
+
+```{py:function} wcc()
+
+Compute the weakly connected component in the graph.
 ```

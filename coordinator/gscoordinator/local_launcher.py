@@ -1,3 +1,21 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+#
+# Copyright 2020-2023 Alibaba Group Holding Limited. All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+
 import base64
 import json
 import logging
@@ -7,6 +25,7 @@ import socket
 import subprocess
 import sys
 import time
+from typing import List
 
 from graphscope.framework.utils import PipeWatcher
 from graphscope.framework.utils import get_free_port
@@ -42,6 +61,8 @@ class LocalLauncher(AbstractLauncher):
         log_level: str,
         instance_id: str,
         timeout_seconds: int,
+        close_timeout_seconds: int = 60,
+        retry_time_seconds: int = 1,
     ):
         super().__init__()
         self._num_workers = num_workers
@@ -56,7 +77,8 @@ class LocalLauncher(AbstractLauncher):
         self._glog_level = parse_as_glog_level(log_level)
         self._instance_id = instance_id
         self._timeout_seconds = timeout_seconds
-
+        self._close_timeout_seconds = close_timeout_seconds
+        self._retry_time_seconds = retry_time_seconds
         self._vineyard_socket_prefix = os.path.join(get_tempdir(), "vineyard.sock.")
 
         # A graphscope instance may have multiple session by reconnecting to coordinator
@@ -165,19 +187,20 @@ class LocalLauncher(AbstractLauncher):
 
         start_time = time.time()
         while is_free_port(rpc_port):
-            time.sleep(1)
             if self._timeout_seconds + start_time < time.time():
                 self._analytical_engine_process.kill()
                 raise RuntimeError("Launch analytical engine failed due to timeout.")
+            time.sleep(self._retry_time_seconds)
+
         logger.info(
             "Analytical engine is listening on %s", self._analytical_engine_endpoint
         )
 
-    def create_interactive_instance(self, object_id: int, schema_path: str):
-        # check java version
+    def create_interactive_instance(
+        self, object_id: int, schema_path: str, params: dict
+    ):
         try:
-            java_version = get_java_version()
-            logger.info("Java version: %s", java_version)
+            logger.info("Java version: %s", get_java_version())
         except:  # noqa: E722
             logger.exception("Cannot get version of java")
 
@@ -201,6 +224,9 @@ class LocalLauncher(AbstractLauncher):
         else:
             num_workers = self._num_workers
 
+        params = "\n".join([f"{k}={v}" for k, v in params.items()])
+        params = base64.b64encode(params.encode("utf-8")).decode("utf-8")
+
         cmd = [
             INTERACTIVE_ENGINE_SCRIPT,
             "create_gremlin_instance_on_local",
@@ -210,11 +236,13 @@ class LocalLauncher(AbstractLauncher):
             str(num_workers),  # server size
             str(self._interactive_port),  # executor port
             str(self._interactive_port + 1),  # executor rpc port
-            str(self._interactive_port + 2 * num_workers),  # frontend port
+            str(self._interactive_port + 2 * num_workers),  # frontend gremlin port
+            str(self._interactive_port + 2 * num_workers + 1),  # frontend cypher port
             self.vineyard_socket,
+            params,
         ]
         logger.info("Create GIE instance with command: %s", " ".join(cmd))
-        self._interactive_port += 3
+        self._interactive_port += 2 * num_workers + 2
         process = subprocess.Popen(
             cmd,
             start_new_session=True,
@@ -317,7 +345,7 @@ class LocalLauncher(AbstractLauncher):
             bufsize=1,
         )
         # 60 seconds is enough
-        process.wait(timeout=60)
+        process.wait(timeout=self._close_timeout_seconds)
         return process
 
     def close_learning_instance(self, object_id):
@@ -339,8 +367,12 @@ class LocalLauncher(AbstractLauncher):
         else:
             self._etcd_peer_port = get_free_port()
 
+        if isinstance(self._hosts, (list, tuple)):
+            hosts = self._hosts
+        else:
+            hosts = self._hosts.split(",")
         local_hostname = "127.0.0.1"
-        if len(self._hosts) > 1:
+        if len(hosts) > 1:
             try:
                 local_hostname = socket.gethostname()
                 socket.gethostbyname(
@@ -371,7 +403,7 @@ class LocalLauncher(AbstractLauncher):
         logger.info("Launch etcd with command: %s", " ".join(cmd))
         logger.info("Server is initializing etcd.")
 
-        self._etcd_process = subprocess.Popen(
+        process = subprocess.Popen(
             cmd,
             start_new_session=True,
             cwd=os.getcwd(),
@@ -379,20 +411,34 @@ class LocalLauncher(AbstractLauncher):
             encoding="utf-8",
             errors="replace",
             stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
             universal_newlines=True,
             bufsize=1,
         )
 
+        stdout_watcher = PipeWatcher(
+            process.stdout,
+            sys.stdout,
+            drop=False,
+            suppressed=False,
+        )
+        setattr(process, "stdout_watcher", stdout_watcher)
+        self._etcd_process = process
+
         start_time = time.time()
         while is_free_port(self._etcd_client_port):
-            time.sleep(1)
             if self._timeout_seconds + start_time < time.time():
                 self._etcd_process.kill()
                 _, errs = self._etcd_process.communicate()
                 logger.error("Start etcd timeout, %s", errs)
-                raise RuntimeError("Launch etcd service failed due to timeout.")
+                msg = "Launch etcd service failed due to timeout: "
+                msg += "\n".join([line for line in stdout_watcher.poll_all()])
+                raise RuntimeError(msg)
+            time.sleep(self._retry_time_seconds)
+
+        stdout_watcher.drop(True)
+        stdout_watcher.suppress(not logger.isEnabledFor(logging.DEBUG))
         logger.info("Etcd is ready, endpoint is %s", self._etcd_endpoint)
 
     def launch_vineyard(self):
@@ -412,12 +458,15 @@ class LocalLauncher(AbstractLauncher):
         self._vineyard_socket = f"{self._vineyard_socket_prefix}{ts}"
         self._vineyard_rpc_port = 9600 if is_free_port(9600) else get_free_port()
 
-        cmd.extend(self.find_vineyardd())
+        cmd.extend([sys.executable, "-m", "vineyard"])
         cmd.extend(["--socket", self.vineyard_socket])
         cmd.extend(["--rpc_socket_port", str(self._vineyard_rpc_port)])
         cmd.extend(["--size", self._shared_mem])
-        cmd.extend(["-etcd_endpoint", self._etcd_endpoint])
-        cmd.extend(["-etcd_prefix", f"vineyard.gsa.{ts}"])
+        if len(hosts) == 1:
+            cmd.extend(["--meta", "local"])
+        else:
+            cmd.extend(["-etcd_endpoint", self._etcd_endpoint])
+            cmd.extend(["-etcd_prefix", f"vineyard.gsa.{ts}"])
         env = os.environ.copy()
         env["GLOG_v"] = str(self._glog_level)
         env.update(mpi_env)
@@ -442,20 +491,20 @@ class LocalLauncher(AbstractLauncher):
         stdout_watcher = PipeWatcher(
             process.stdout,
             sys.stdout,
-            suppressed=(not logger.isEnabledFor(logging.DEBUG)),
+            drop=False,
+            suppressed=False,
         )
         setattr(process, "stdout_watcher", stdout_watcher)
-
         self._vineyardd_process = process
 
         start_time = time.time()
         if len(hosts) > 1:
-            time.sleep(5)  # should be OK
+            time.sleep(5 * self._retry_time_seconds)  # should be OK
         else:
             while not os.path.exists(self._vineyard_socket):
-                time.sleep(1)
                 if self._vineyardd_process.poll() is not None:
-                    msg = "Launch vineyardd failed."
+                    msg = "Launch vineyardd failed: "
+                    msg += "\n".join([line for line in stdout_watcher.poll_all()])
                     msg += "\nRerun with `graphscope.set_option(log_level='debug')`,"
                     msg += " to get verbosed vineyardd logs."
                     raise RuntimeError(msg)
@@ -464,8 +513,13 @@ class LocalLauncher(AbstractLauncher):
                     # outs, _ = self._vineyardd_process.communicate()
                     # logger.error("Start vineyardd timeout, %s", outs)
                     raise RuntimeError("Launch vineyardd failed due to timeout.")
+                time.sleep(self._retry_time_seconds)
+
+        stdout_watcher.drop(True)
+        stdout_watcher.suppress(not logger.isEnabledFor(logging.DEBUG))
         logger.info(
-            "Vineyardd is ready, ipc socket is {0}".format(self._vineyard_socket)
+            "Vineyardd is ready, ipc socket is %s",
+            self._vineyard_socket,
         )
 
     def close_etcd(self):
@@ -486,30 +540,17 @@ class LocalLauncher(AbstractLauncher):
         dir = os.path.dirname(path)
         for host in self.hosts.split(","):
             if host not in ("localhost", "127.0.0.1"):
-                logger.debug(run_command(f"ssh {host} mkdir -p {dir}"))
-                logger.debug(run_command(f"scp -r {path} {host}:{path}"))
+                logger.debug(run_command(f"ssh {host} mkdir -p {dir}"))  # noqa: G004
+                logger.debug(run_command(f"scp -r {path} {host}:{path}"))  # noqa: G004
 
     @staticmethod
-    def find_etcd() -> [str]:
+    def find_etcd() -> List[str]:
         etcd = shutil.which("etcd")
         if etcd is None:
             etcd = [sys.executable, "-m", "etcd_distro.etcd"]
         else:
             etcd = [etcd]
         return etcd
-
-    @staticmethod
-    def find_vineyardd() -> [str]:
-        vineyardd = None
-        if "VINEYARD_HOME" in os.environ:
-            vineyardd = os.path.expandvars("$VINEYARD_HOME/vineyardd")
-        if vineyardd is None:
-            vineyardd = shutil.which("vineyardd")
-        if vineyardd is None:
-            vineyardd = [sys.executable, "-m", "vineyard"]
-        else:
-            vineyardd = [vineyardd]
-        return vineyardd
 
     def configure_etcd_endpoint(self):
         if self._external_etcd_addr is None:
@@ -523,7 +564,12 @@ class LocalLauncher(AbstractLauncher):
     def start(self):
         try:
             # create etcd
-            self.configure_etcd_endpoint()
+            if isinstance(self._hosts, (list, tuple)):
+                hosts = self._hosts
+            else:
+                hosts = self._hosts.split(",")
+            if len(hosts) > 1:
+                self.configure_etcd_endpoint()
             # create vineyard
             self.launch_vineyard()
         except Exception:  # pylint: disable=broad-except

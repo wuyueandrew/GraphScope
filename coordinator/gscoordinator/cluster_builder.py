@@ -1,3 +1,21 @@
+#! /usr/bin/env python3
+# -*- coding: utf-8 -*-
+#
+# Copyright 2020-2023 Alibaba Group Holding Limited.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+
 import base64
 import json
 import logging
@@ -5,22 +23,8 @@ import os
 
 try:
     from kubernetes import client as kube_client
-    from kubernetes import config as kube_config
-    from kubernetes import watch as kube_watch
-    from kubernetes.client import AppsV1Api
-    from kubernetes.client import CoreV1Api
-    from kubernetes.client.rest import ApiException as K8SApiException
-    from kubernetes.config import ConfigException as K8SConfigException
 except ImportError:
     kube_client = None
-    kube_config = None
-    kube_watch = None
-    AppsV1Api = None
-    CoreV1Api = None
-    K8SApiException = None
-    K8SConfigException = None
-
-from pprint import pprint
 
 from graphscope.deploy.kubernetes.resource_builder import ResourceBuilder
 from graphscope.deploy.kubernetes.utils import get_service_endpoints
@@ -54,6 +58,7 @@ class EngineCluster:
         engine_cpu,
         engine_mem,
         engine_pod_node_selector,
+        engine_pod_prefix,
         glog_level,
         image_pull_policy,
         image_pull_secrets,
@@ -80,7 +85,7 @@ class EngineCluster:
         with_mars,
         dataset_proxy,
     ):
-        self._gs_prefix = "gs-engine-"
+        self._gs_prefix = engine_pod_prefix
         self._analytical_prefix = "gs-analytical-"
         self._interactive_frontend_prefix = "gs-interactive-frontend-"
 
@@ -101,7 +106,9 @@ class EngineCluster:
             "app.kubernetes.io/instance": self._instance_id,
             "app.kubernetes.io/version": __version__,
             "app.kubernetes.io/component": "engine",
+            "app.kubernetes.io/engine_selector": self.engine_stateful_set_name,
         }
+
         self._frontend_labels = self._engine_labels.copy()
         self._frontend_labels["app.kubernetes.io/component"] = "frontend"
 
@@ -160,6 +167,7 @@ class EngineCluster:
 
         self._vineyard_requests = {"cpu": vineyard_cpu, "memory": vineyard_mem}
         self._analytical_requests = {"cpu": engine_cpu, "memory": engine_mem}
+        # Should give executor a smaller value, since it doesn't need to load the graph
         self._executor_requests = {"cpu": "2000m", "memory": engine_mem}
         self._learning_requests = {"cpu": "1000m", "memory": "256Mi"}
         self._frontend_requests = {"cpu": "200m", "memory": "512Mi"}
@@ -216,25 +224,6 @@ class EngineCluster:
         ]
         return env
 
-    def get_vineyard_socket_volume(self):
-        name = "vineyard-ipc-socket"
-        volume = kube_client.V1Volume(name=name)
-        if self._vineyard_deployment is None:
-            empty_dir = kube_client.V1EmptyDirVolumeSource()
-            volume.empty_dir = empty_dir
-        else:
-            path = f"/var/run/vineyard-kubernetes/{self._namespace}/{self._vineyard_deployment}"
-            host_path = kube_client.V1HostPathVolumeSource(path=path)
-            host_path.type = "Directory"
-            volume.host_path = host_path
-
-        source_volume_mount = kube_client.V1VolumeMount(
-            name=name, mount_path="/tmp/vineyard_workspace"
-        )
-        destination_volume_mount = source_volume_mount
-
-        return volume, source_volume_mount, destination_volume_mount
-
     def get_shm_volume(self):
         name = "host-shm"
         volume = kube_client.V1Volume(name=name)
@@ -281,10 +270,15 @@ class EngineCluster:
         )
         return container
 
+    def _get_tail_if_exists_cmd(self, fname: str):
+        return (
+            f"while true; do if [ -e {fname} ]; then tail -f {fname}; fi; sleep 1; done"
+        )
+
     def get_analytical_container(self, volume_mounts, with_java=False):
         name = self.analytical_container_name
         image = self._analytical_image if not with_java else self._analytical_java_image
-        args = ["tail", "-f", "/dev/null"]
+        args = ["bash", "-c", self._get_tail_if_exists_cmd("/tmp/grape_engine.INFO")]
         container = self.get_engine_container_helper(
             name,
             image,
@@ -308,7 +302,11 @@ class EngineCluster:
     def get_interactive_executor_container(self, volume_mounts):
         name = self.interactive_executor_container_name
         image = self._interactive_executor_image
-        args = ["tail", "-f", "/dev/null"]
+        args = [
+            "bash",
+            "-c",
+            self._get_tail_if_exists_cmd("/var/log/graphscope/current/executor.*.log"),
+        ]
         container = self.get_engine_container_helper(
             name,
             image,
@@ -337,40 +335,6 @@ class EngineCluster:
         ]
         return container
 
-    def get_vineyard_container(self, volume_mounts):
-        name = self.vineyard_container_name
-        image = self._vineyard_image
-        sts_name = self.engine_stateful_set_name
-        svc_name = sts_name + "-headless"
-        pod0_dns = f"{sts_name}-0.{svc_name}.{self._namespace}.svc.cluster.local"
-        vineyard_cmd = (
-            f"vineyardd -size {self._vineyard_shared_mem} -socket {self._sock}"
-        )
-        args = f"""
-            [[ `hostname` =~ -([0-9]+)$ ]] || exit 1;
-            ordinal=${{BASH_REMATCH[1]}};
-            if (( $ordinal == 0 )); then
-                {vineyard_cmd} -etcd_endpoint http://0.0.0.0:{self._etcd_port}
-            else
-                until nslookup {pod0_dns}; do sleep 1; done;
-                {vineyard_cmd} -etcd_endpoint http://{pod0_dns}:{self._etcd_port}
-            fi;
-            """
-        args = ["bash", "-c", args]
-        container = self.get_engine_container_helper(
-            name,
-            image,
-            args,
-            volume_mounts,
-            self._vineyard_requests,
-            self._vineyard_requests,
-        )
-        container.ports = [
-            kube_client.V1ContainerPort(container_port=self._vineyard_service_port),
-            kube_client.V1ContainerPort(container_port=self._etcd_port),
-        ]
-        return container
-
     def get_mars_container(self):
         _ = self.mars_container_name
         return
@@ -392,15 +356,35 @@ class EngineCluster:
         container.security_context = kube_client.V1SecurityContext(privileged=True)
         return container
 
+    def get_vineyard_socket_volume_from_vineyard_deployment(self):
+        name = "vineyard-ipc-socket"
+
+        # Notice, the path must be same as the one in vineyardd_types.go
+        # https://github.com/v6d-io/v6d/blob/main/k8s/apis/k8s/v1alpha1/vineyardd_types.go#L125
+        path = f"/var/run/vineyard-kubernetes/{self._namespace}/{self._vineyard_deployment}"
+        host_path = kube_client.V1HostPathVolumeSource(path=path)
+        host_path.type = "Directory"
+        volume = kube_client.V1Volume(name=name, host_path=host_path)
+        volume_mount = kube_client.V1VolumeMount(
+            name=name, mount_path="/tmp/vineyard_workspace"
+        )
+        return volume, volume_mount
+
     def get_engine_pod_spec(self):
         containers = []
         volumes = []
 
-        socket_volume = self.get_vineyard_socket_volume()
         shm_volume = self.get_shm_volume()
-        volumes.extend([socket_volume[0], shm_volume[0]])
+        volumes = [shm_volume[0]]
+        engine_volume_mounts = [shm_volume[2]]
 
-        engine_volume_mounts = [socket_volume[2], shm_volume[2]]
+        if self.vineyard_deployment_exists():
+            (
+                volume,
+                volume_mount,
+            ) = self.get_vineyard_socket_volume_from_vineyard_deployment()
+            volumes.append(volume)
+            engine_volume_mounts.append(volume_mount)
 
         if self._volumes and self._volumes is not None:
             udf_volumes = ResourceBuilder.get_user_defined_volumes(self._volumes)
@@ -426,13 +410,6 @@ class EngineCluster:
         if self._with_learning:
             containers.append(
                 self.get_learning_container(volume_mounts=engine_volume_mounts)
-            )
-
-        if self._vineyard_deployment is None:
-            containers.append(
-                self.get_vineyard_container(
-                    volume_mounts=[socket_volume[1], shm_volume[1]]
-                )
             )
 
         if self._with_dataset:
@@ -481,20 +458,9 @@ class EngineCluster:
         service_spec = ResourceBuilder.get_service_spec(
             "ClusterIP", ports, self._engine_labels, None
         )
-        # Necessary, create a headless service for statefulset
-        service_spec.cluster_ip = "None"
-        service = ResourceBuilder.get_service(
-            self._namespace, name, service_spec, self._engine_labels
-        )
-        return service
 
-    def get_vineyard_service(self):
-        service_type = self._service_type
-        name = f"{self._vineyard_prefix}{self._instance_id}"
-        ports = [kube_client.V1ServicePort(name=name, port=self._vineyard_service_port)]
-        service_spec = ResourceBuilder.get_service_spec(
-            service_type, ports, self._engine_labels, None
-        )
+        # Necessary, create a headless service for statefulsets
+        service_spec.cluster_ip = "None"
         service = ResourceBuilder.get_service(
             self._namespace, name, service_spec, self._engine_labels
         )
@@ -530,7 +496,7 @@ class EngineCluster:
 
     @property
     def vineyard_service_name(self):
-        return f"{self._vineyard_prefix}{self._instance_id}"
+        return f"{self.engine_stateful_set_name}-{self._instance_id}-vineyard-rpc"
 
     def get_vineyard_service_endpoint(self, api_client):
         # return f"{self.vineyard_service_name}:{self._vineyard_service_port}"
@@ -538,7 +504,6 @@ class EngineCluster:
         service_type = self._service_type
         if self.vineyard_deployment_exists():
             service_name = self._vineyard_deployment + "-rpc"
-            service_type = "ClusterIP"
         endpoints = get_service_endpoints(
             api_client=api_client,
             namespace=self._namespace,
@@ -583,7 +548,11 @@ class EngineCluster:
     def get_interactive_frontend_container(self):
         name = self.interactive_frontend_container_name
         image = self._interactive_frontend_image
-        args = ["tail", "-f", "/dev/null"]
+        args = [
+            "bash",
+            "-c",
+            self._get_tail_if_exists_cmd("/var/log/graphscope/current/frontend.log"),
+        ]
         container = kube_client.V1Container(name=name, image=image, args=args)
         container.image_pull_policy = self._image_pull_policy
         container.resources = ResourceBuilder.get_resources(
@@ -608,10 +577,13 @@ class EngineCluster:
             self._namespace, name, deployment_spec, self._frontend_labels
         )
 
-    def get_interactive_frontend_service(self, port):
+    def get_interactive_frontend_service(self, gremlin_port, cypher_port):
         name = self.frontend_deployment_name
         service_type = self._service_type
-        ports = [kube_client.V1ServicePort(name="gremlin", port=port)]
+        ports = [
+            kube_client.V1ServicePort(name="gremlin", port=gremlin_port),
+            kube_client.V1ServicePort(name="cypher", port=cypher_port),
+        ]
         service_spec = ResourceBuilder.get_service_spec(
             service_type, ports, self._frontend_labels, None
         )

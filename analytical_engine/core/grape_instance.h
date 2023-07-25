@@ -38,7 +38,7 @@
 #include "core/object/object_manager.h"
 #include "core/server/dispatcher.h"
 #include "core/server/rpc_utils.h"
-#include "graphscope/proto/types.pb.h"
+#include "proto/types.pb.h"
 
 namespace bl = boost::leaf;
 
@@ -100,6 +100,8 @@ class GrapeInstance : public Subscriber {
   bl::result<rpc::graph::GraphDefPb> loadGraph(const rpc::GSParams& params);
 
   bl::result<void> unloadGraph(const rpc::GSParams& params);
+
+  bl::result<void> archiveGraph(const rpc::GSParams& params);
 
   bl::result<std::string> loadApp(const rpc::GSParams& params);
 

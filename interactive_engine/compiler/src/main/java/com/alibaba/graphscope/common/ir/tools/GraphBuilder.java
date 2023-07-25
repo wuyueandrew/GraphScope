@@ -18,7 +18,9 @@ package com.alibaba.graphscope.common.ir.tools;
 
 import static java.util.Objects.requireNonNull;
 
-import com.alibaba.graphscope.common.ir.rel.*;
+import com.alibaba.graphscope.common.ir.rel.GraphLogicalAggregate;
+import com.alibaba.graphscope.common.ir.rel.GraphLogicalProject;
+import com.alibaba.graphscope.common.ir.rel.GraphLogicalSort;
 import com.alibaba.graphscope.common.ir.rel.graph.*;
 import com.alibaba.graphscope.common.ir.rel.graph.match.GraphLogicalMultiMatch;
 import com.alibaba.graphscope.common.ir.rel.graph.match.GraphLogicalSingleMatch;
@@ -41,7 +43,8 @@ import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Lists;
 
 import org.apache.calcite.plan.*;
-import org.apache.calcite.rel.*;
+import org.apache.calcite.rel.RelFieldCollation;
+import org.apache.calcite.rel.RelNode;
 import org.apache.calcite.rel.core.Filter;
 import org.apache.calcite.rel.core.Project;
 import org.apache.calcite.rel.core.Sort;
@@ -58,6 +61,7 @@ import org.apache.calcite.util.Litmus;
 import org.apache.commons.lang3.ObjectUtils;
 import org.checkerframework.checker.nullness.qual.Nullable;
 
+import java.math.BigDecimal;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -467,10 +471,35 @@ public class GraphBuilder extends RelBuilder {
         operator.validRexOperands(callBinding.getOperandCount(), Litmus.THROW);
         // check type of each operand, if fail throw exceptions
         operator.checkOperandTypes(callBinding, true);
-        // derive type
-        RelDataType type = operator.inferReturnType(callBinding);
+        // derive return type
+        RelDataType returnType = operator.inferReturnType(callBinding);
+        // derive unknown types of operands
+        operandList = inferOperandTypes(operator, returnType, operandList);
         final RexBuilder builder = cluster.getRexBuilder();
-        return builder.makeCall(type, operator, operandList);
+        return builder.makeCall(returnType, operator, operandList);
+    }
+
+    private List<RexNode> inferOperandTypes(
+            SqlOperator operator, RelDataType returnType, List<RexNode> operandList) {
+        if (operator.getOperandTypeInference() != null
+                && operandList.stream()
+                        .anyMatch((t) -> t.getType().getSqlTypeName() == SqlTypeName.UNKNOWN)) {
+            RexCallBinding callBinding =
+                    new RexCallBinding(getTypeFactory(), operator, operandList, ImmutableList.of());
+            RelDataType[] newTypes = callBinding.collectOperandTypes().toArray(new RelDataType[0]);
+            operator.getOperandTypeInference().inferOperandTypes(callBinding, returnType, newTypes);
+            List<RexNode> typeInferredOperands = new ArrayList<>(operandList.size());
+            GraphRexBuilder rexBuilder = (GraphRexBuilder) this.getRexBuilder();
+            for (int i = 0; i < operandList.size(); ++i) {
+                typeInferredOperands.add(
+                        operandList
+                                .get(i)
+                                .accept(new RexNodeTypeRefresher(newTypes[i], rexBuilder)));
+            }
+            return typeInferredOperands;
+        } else {
+            return operandList;
+        }
     }
 
     private boolean isCurrentSupported(SqlOperator operator) {
@@ -481,7 +510,9 @@ public class GraphBuilder extends RelBuilder {
                 || sqlKind == SqlKind.OR
                 || sqlKind == SqlKind.DESCENDING
                 || (sqlKind == SqlKind.OTHER_FUNCTION && operator.getName().equals("POWER"))
-                || (sqlKind == SqlKind.MINUS_PREFIX);
+                || (sqlKind == SqlKind.MINUS_PREFIX)
+                || (sqlKind == SqlKind.CASE)
+                || (sqlKind == SqlKind.PROCEDURE_CALL);
     }
 
     @Override
@@ -883,6 +914,33 @@ public class GraphBuilder extends RelBuilder {
             project(originalExprs, originalAliases, false);
         }
         return this;
+    }
+
+    @Override
+    public RexLiteral literal(@Nullable Object value) {
+        final RexBuilder rexBuilder = cluster.getRexBuilder();
+        if (value == null) {
+            final RelDataType type = getTypeFactory().createSqlType(SqlTypeName.NULL);
+            return rexBuilder.makeNullLiteral(type);
+        } else if (value instanceof Boolean) {
+            return rexBuilder.makeLiteral((Boolean) value);
+        } else if (value instanceof BigDecimal) {
+            return rexBuilder.makeExactLiteral((BigDecimal) value);
+        } else if (value instanceof Float || value instanceof Double) {
+            return rexBuilder.makeApproxLiteral(BigDecimal.valueOf(((Number) value).doubleValue()));
+        } else if (value instanceof Integer) {
+            return rexBuilder.makeExactLiteral(BigDecimal.valueOf(((Number) value).longValue()));
+        } else if (value instanceof Long) { // convert long to BIGINT, i.e. 2l
+            return rexBuilder.makeBigintLiteral(BigDecimal.valueOf(((Number) value).longValue()));
+        } else if (value instanceof String) {
+            return rexBuilder.makeLiteral((String) value);
+        } else if (value instanceof Enum) {
+            return rexBuilder.makeLiteral(
+                    value, getTypeFactory().createSqlType(SqlTypeName.SYMBOL));
+        } else {
+            throw new IllegalArgumentException(
+                    "cannot convert " + value + " (" + value.getClass() + ") to a constant");
+        }
     }
 
     /**

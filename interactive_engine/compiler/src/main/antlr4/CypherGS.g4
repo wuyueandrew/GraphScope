@@ -26,6 +26,33 @@ oC_Statement
       :  oC_Query ;
 
 oC_Query
+     :  oC_RegularQuery
+     |  oC_StandaloneCall
+     ;
+
+oC_StandaloneCall
+     :  CALL SP ( oC_ExplicitProcedureInvocation | oC_ImplicitProcedureInvocation ) ( SP? YIELD SP ( '*' ) )? ;
+
+oC_ExplicitProcedureInvocation
+     :  oC_ProcedureName SP? '(' SP? ( oC_Expression SP? ( ',' SP? oC_Expression SP? )* )? ')' ;
+
+oC_ImplicitProcedureInvocation
+     :  oC_ProcedureName ;
+
+oC_ProcedureName
+     :  oC_Namespace oC_SymbolicName ;
+
+oC_Namespace
+     :  ( oC_SymbolicName '.' )* ;
+
+oC_ProcedureResultField
+     :  oC_SymbolicName ;
+
+CALL : ( 'C' | 'c' ) ( 'A' | 'a' ) ( 'L' | 'l' ) ( 'L' | 'l' ) ;
+
+YIELD : ( 'Y' | 'y' ) ( 'I' | 'i' ) ( 'E' | 'e' ) ( 'L' | 'l' ) ( 'D' | 'd' ) ;
+
+oC_RegularQuery
      :  oC_Match ( SP? oC_With )* ( SP oC_Return ) ;
 
 oC_Match
@@ -246,7 +273,34 @@ oC_Atom
         | oC_Variable
         | oC_FunctionInvocation
         | oC_CountAny
+        | oC_Parameter
+        | oC_CaseExpression
         ;
+
+oC_Parameter
+    : '$' ( oC_SymbolicName ) ;
+
+oC_CaseExpression
+    :  ( ( CASE ( SP? oC_CaseAlternative )+ ) | ( CASE SP? oC_InputExpression ( SP? oC_CaseAlternative )+ ) ) ( SP? ELSE SP? oC_ElseExpression )? SP? END ;
+
+oC_InputExpression
+    : oC_Expression ;
+
+oC_ElseExpression
+    : oC_Expression ;
+
+CASE : ( 'C' | 'c' ) ( 'A' | 'a' ) ( 'S' | 's' ) ( 'E' | 'e' ) ;
+
+ELSE : ( 'E' | 'e' ) ( 'L' | 'l' ) ( 'S' | 's' ) ( 'E' | 'e' ) ;
+
+END : ( 'E' | 'e' ) ( 'N' | 'n' ) ( 'D' | 'd' ) ;
+
+oC_CaseAlternative
+    :  WHEN SP? oC_Expression SP? THEN SP? oC_Expression ;
+
+WHEN : ( 'W' | 'w' ) ( 'H' | 'h' ) ( 'E' | 'e' ) ( 'N' | 'n' ) ;
+
+THEN : ( 'T' | 't' ) ( 'H' | 'h' ) ( 'E' | 'e' ) ( 'N' | 'n' ) ;
 
 oC_CountAny
     : ( COUNT SP? '(' SP? '*' SP? ')' )
@@ -284,7 +338,7 @@ oC_NumberLiteral
 oC_IntegerLiteral
               :  HexInteger
                   | OctalInteger
-                  | DecimalInteger
+                  | DecimalInteger ('l' | 'L') ?
                   ;
 
 HexInteger
@@ -364,7 +418,7 @@ oC_ListLiteral
            :  '[' SP? ( oC_Expression SP? ( ',' SP? oC_Expression SP? )* )? ']' ;
 
 oC_MapLiteral
-          :  '{' SP? ( oC_PropertyKeyName SP? ':' SP? oC_StringListNullPredicateExpression SP? ( ',' SP? oC_PropertyKeyName SP? ':' SP? oC_StringListNullPredicateExpression SP? )* )? '}' ;
+          :  '{' SP? ( oC_PropertyKeyName SP? ':' SP? oC_Expression SP? ( ',' SP? oC_PropertyKeyName SP? ':' SP? oC_Expression SP? )* )? '}' ;
 
 oC_PropertyKeyName
                :  oC_SchemaName ;

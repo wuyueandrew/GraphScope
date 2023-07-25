@@ -229,7 +229,7 @@ public class ClientService extends ClientGrpc.ClientImplBase {
                         responseObserver.onCompleted();
                     });
         } catch (Exception e) {
-            logger.error("commit failed", e);
+            logger.error("load json schema failed", e);
             responseObserver.onError(
                     Status.INTERNAL.withDescription(e.getMessage()).asRuntimeException());
         }
@@ -337,6 +337,7 @@ public class ClientService extends ClientGrpc.ClientImplBase {
         AtomicInteger counter = new AtomicInteger(storeCount);
         AtomicBoolean finished = new AtomicBoolean(false);
         for (int i = 0; i < storeCount; i++) {
+            logger.info("Store [" + i + "] started to ingest...");
             this.storeIngestor.ingest(
                     i,
                     dataPath,

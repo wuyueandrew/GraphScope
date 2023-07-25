@@ -205,12 +205,16 @@ class GRPCClient(object):
         response = self._stub.CreateAnalyticalInstance(request)
         return json.loads(response.engine_config), response.host_names
 
-    def create_interactive_instance(self, object_id, schema_path):
+    def create_interactive_instance(self, object_id, schema_path, params=None):
         request = message_pb2.CreateInteractiveInstanceRequest(
             session_id=self._session_id, object_id=object_id, schema_path=schema_path
         )
+        if params is not None:
+            for k, v in params.items():
+                request.params[str(k)] = str(v)
+
         response = self._stub.CreateInteractiveInstance(request)
-        return response.gremlin_endpoint
+        return response.gremlin_endpoint, response.cypher_endpoint
 
     def create_learning_instance(self, object_id, handle, config):
         request = message_pb2.CreateLearningInstanceRequest(session_id=self._session_id)

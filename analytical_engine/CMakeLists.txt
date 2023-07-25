@@ -19,6 +19,18 @@ option(LET_IT_CRASH_ON_EXCEPTION "Disable boost leaf's error handling and let it
 execute_process(COMMAND uname -m OUTPUT_VARIABLE SYSTEM_PROCESSOR)
 string(REGEX REPLACE "\n$" "" SYSTEM_PROCESSOR "${SYSTEM_PROCESSOR}")
 
+# find jni ---------------------------------------------------------------------
+if (ENABLE_JAVA_SDK)
+    find_package(JNI QUIET)
+    if (JNI_FOUND)
+        include_directories(SYSTEM ${JAVA_INCLUDE_PATH})
+        include_directories(SYSTEM ${JAVA_INCLUDE_PATH2})
+    else()
+        message(WARNING "Disable Java SDK because JNI libraries not found")
+        set(ENABLE_JAVA_SDK OFF)
+    endif()
+endif()
+
 if (ENABLE_JAVA_SDK)
     #check whether we are using clang.
     if (CMAKE_CXX_COMPILER_ID MATCHES "Clang")
@@ -119,7 +131,7 @@ include(GNUInstallDirs)
 # reference: https://gitlab.kitware.com/cmake/community/-/wikis/doc/cmake/RPATH-handling#always-full-rpath
 set(CMAKE_BUILD_WITH_INSTALL_RPATH FALSE)
 if(APPLE)
-    # the LC_RPATH on Mac seems doesn't support multiple path (seperated with ':seperated with `:`)
+    # the LC_RPATH on Mac seems doesn't support multiple path (separated with ':separated with `:`)
     # fortunately, we just need to take care `lib` on Mac.
     set(CMAKE_INSTALL_RPATH "${CMAKE_INSTALL_PREFIX}/lib")
 else()
@@ -153,8 +165,29 @@ if (APPLE)
     else()
         set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -L/usr/local/lib")
     endif()
-endif ()
+endif()
 find_package(OpenMP REQUIRED)
+
+if (APPLE)
+    # If we're on OS X check for Homebrew's copy of OpenSSL instead of Apple's
+    if (NOT OpenSSL_DIR)
+        find_program(HOMEBREW brew)
+        if (HOMEBREW STREQUAL "HOMEBREW-NOTFOUND")
+            message(WARNING "Homebrew not found: not using Homebrew's OpenSSL")
+            if (NOT OPENSSL_ROOT_DIR)
+                message(WARNING "Use -DOPENSSL_ROOT_DIR for non-Apple OpenSSL")
+            endif()
+        else()
+            execute_process(COMMAND brew --prefix openssl
+                OUTPUT_VARIABLE OPENSSL_ROOT_DIR
+                OUTPUT_STRIP_TRAILING_WHITESPACE)
+        endif()
+    endif()
+endif()
+find_package(OpenSSL ${ARGN})
+if (OPENSSL_FOUND)
+    include_directories(SYSTEM ${OPENSSL_INCLUDE_DIR})
+endif()
 
 find_package(Boost REQUIRED COMPONENTS system filesystem
              # required by folly
@@ -202,15 +235,11 @@ endif ()
 find_package(libgrapelite REQUIRED)
 include_directories(${LIBGRAPELITE_INCLUDE_DIRS})
 
-find_package(Protobuf REQUIRED)
-include_directories(${Protobuf_INCLUDE_DIRS})
-
-if (ENABLE_JAVA_SDK)
-# find jni---------------------------------------------------------------------
-    find_package(JNI REQUIRED)
-    include_directories(SYSTEM ${JAVA_INCLUDE_PATH})
-    include_directories(SYSTEM ${JAVA_INCLUDE_PATH2})
+find_package(Protobuf CONFIG QUIET)
+if (NOT Protobuf_FOUND)
+    find_package(Protobuf REQUIRED)
 endif()
+include_directories(${Protobuf_INCLUDE_DIRS})
 
 find_package(gRPC QUIET)
 if(gRPC_FOUND)
@@ -240,7 +269,7 @@ else()
 endif()
 
 # find vineyard after arrow to avoid duplicate target names
-find_package(vineyard 0.13.0 REQUIRED)
+find_package(vineyard 0.14.8 REQUIRED)
 include_directories(${VINEYARD_INCLUDE_DIRS})
 add_compile_options(-DENABLE_SELECTOR)
 
@@ -249,10 +278,10 @@ if(Arrow_FOUND AND Arrow_VERSION VERSION_GREATER 9.0.1)
 endif()
 
 # Generate proto
-execute_process(COMMAND python3 python/graphscope/proto/proto_generator.py "${PROJECT_SOURCE_DIR}" --cpp
-        WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}/..)
+execute_process(COMMAND python3 ../proto/proto_generator.py "${PROJECT_SOURCE_DIR}/proto" --cpp
+        WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
 
-file(GLOB PROTO_CPP_FILES "graphscope/proto/*.cc")
+file(GLOB PROTO_CPP_FILES "proto/*.cc")
 file(GLOB CORE_RPC_SRC_FILES "core/server/*.cc")
 
 # Add targets
@@ -266,19 +295,19 @@ target_link_libraries(gs_proto PUBLIC
 
 add_library(gs_util SHARED "core/flags.cc" "core/launcher.cc")
 target_link_libraries(gs_util PRIVATE
-        ${LIBGRAPELITE_LIBRARIES}
-        ${GFLAGS_LIBRARIES}
-        ${VINEYARD_LIBRARIES}
-        ${Boost_LIBRARIES}
-    )
+    ${LIBGRAPELITE_LIBRARIES}
+    ${GFLAGS_LIBRARIES}
+    ${VINEYARD_LIBRARIES}
+    ${Boost_LIBRARIES}
+)
 
 if (ENABLE_JAVA_SDK)
     target_sources(gs_util PRIVATE "core/java/javasdk.cc")
     target_compile_definitions(gs_util PUBLIC ENABLE_JAVA_SDK)
     target_link_libraries(gs_util PRIVATE
-            ${JAVA_JVM_LIBRARY}
-            ${JNI_LIBRARIES}
-        )
+        ${JAVA_JVM_LIBRARY}
+        ${JNI_LIBRARIES}
+    )
 endif()
 
 add_executable(grape_engine
@@ -289,17 +318,21 @@ add_executable(grape_engine
     )
 target_include_directories(grape_engine PRIVATE proto utils)
 target_link_libraries(grape_engine PRIVATE
-        gs_proto
-        gs_util
-        ${LIBGRAPELITE_LIBRARIES}
-        ${GFLAGS_LIBRARIES}
-        ${CMAKE_DL_LIBS}
-        ${Boost_LIBRARIES}
-        ${VINEYARD_LIBRARIES}
-    )
+    gs_proto
+    gs_util
+    ${LIBGRAPELITE_LIBRARIES}
+    ${GFLAGS_LIBRARIES}
+    ${CMAKE_DL_LIBS}
+    ${Boost_LIBRARIES}
+    ${VINEYARD_LIBRARIES}
+)
 
 if (ENABLE_JAVA_SDK)
     target_compile_definitions(grape_engine PUBLIC ENABLE_JAVA_SDK)
+endif()
+
+if (BUILD_VINEYARD_GRAPH_WITH_GAR)
+    target_compile_definitions(grape_engine PRIVATE -DENABLE_GAR)
 endif()
 
 if (LET_IT_CRASH_ON_EXCEPTION)
@@ -388,6 +421,7 @@ if (BUILD_TESTS)
     endmacro()
 
     add_vineyard_app(run_vy_app SRCS test/run_vy_app.cc)
+    add_vineyard_app(run_vy_app_compact SRCS test/run_vy_app_compact.cc)
     add_vineyard_app(run_vy_app_local_vm SRCS test/run_vy_app_local_vm.cc)
 
     add_vineyard_app(run_load_from_stream SRCS test/run_load_from_stream.cc)
@@ -426,7 +460,7 @@ if (BUILD_TESTS)
     endif ()
 endif ()
 
-# Cpplint
+# cpplint
 file(GLOB_RECURSE FILES_NEED_LINT
         "apps/*.cc"
         "apps/*.h"
@@ -535,22 +569,22 @@ endif()
 install_gsa_headers("${PROJECT_SOURCE_DIR}/apps")
 install_gsa_headers("${PROJECT_SOURCE_DIR}/benchmarks")
 install_gsa_headers("${PROJECT_SOURCE_DIR}/core")
-install_gsa_headers("${PROJECT_SOURCE_DIR}/graphscope")
+install_gsa_headers("${PROJECT_SOURCE_DIR}/proto")
 install_gsa_app_frames("${PROJECT_SOURCE_DIR}/frame")
 
 install_gsa_dependency_modules("${PROJECT_SOURCE_DIR}/cmake")
 
 configure_file(graphscope-analytical-config.in.cmake
         "${PROJECT_BINARY_DIR}/graphscope-analytical-config.cmake" @ONLY
-        )
+)
 configure_file(graphscope-analytical-config-version.in.cmake
         "${PROJECT_BINARY_DIR}/graphscope-analytical-config-version.cmake" @ONLY
-        )
+)
 install(FILES "${PROJECT_BINARY_DIR}/graphscope-analytical-config.cmake"
         "${PROJECT_BINARY_DIR}/graphscope-analytical-config-version.cmake"
         DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/graphscope-analytical
-        )
+)
 install(EXPORT graphscope-analytical-targets
         FILE graphscope-analytical-targets.cmake
         DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/graphscope-analytical
-        )
+)

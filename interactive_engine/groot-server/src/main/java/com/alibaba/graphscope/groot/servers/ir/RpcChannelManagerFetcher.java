@@ -16,7 +16,7 @@
 
 package com.alibaba.graphscope.groot.servers.ir;
 
-import com.alibaba.graphscope.common.client.RpcChannelFetcher;
+import com.alibaba.graphscope.common.client.channel.ChannelFetcher;
 import com.alibaba.graphscope.groot.common.RoleType;
 import com.alibaba.graphscope.groot.rpc.ChannelManager;
 import com.alibaba.pegasus.RpcChannel;
@@ -24,7 +24,7 @@ import com.alibaba.pegasus.RpcChannel;
 import java.util.ArrayList;
 import java.util.List;
 
-public class RpcChannelManagerFetcher implements RpcChannelFetcher {
+public class RpcChannelManagerFetcher implements ChannelFetcher<RpcChannel> {
     private ChannelManager manager;
     private int nodeCount;
     private RoleType targetRole;
@@ -46,7 +46,7 @@ public class RpcChannelManagerFetcher implements RpcChannelFetcher {
     }
 
     @Override
-    public boolean isDynamic() {
-        return true;
+    public Type getType() {
+        return Type.RPC;
     }
 }

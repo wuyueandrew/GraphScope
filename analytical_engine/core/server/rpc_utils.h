@@ -28,10 +28,10 @@
 
 #include "core/config.h"
 #include "core/server/command_detail.h"
-#include "graphscope/proto/attr_value.pb.h"
-#include "graphscope/proto/graph_def.pb.h"
-#include "graphscope/proto/op_def.pb.h"
-#include "graphscope/proto/types.pb.h"
+#include "proto/attr_value.pb.h"
+#include "proto/graph_def.pb.h"
+#include "proto/op_def.pb.h"
+#include "proto/types.pb.h"
 
 namespace bl = boost::leaf;
 
@@ -117,11 +117,30 @@ class GSParams {
     return get_param_impl<T>(params_, key);
   }
 
+  template <typename T>
+  bl::result<T> Get(rpc::ParamKey key, T const& default_value) const {
+    if (params_.find(key) == params_.end()) {
+      return default_value;
+    }
+    return get_param_impl<T>(params_, key);
+  }
+
   bool HasKey(rpc::ParamKey key) const {
     return params_.find(key) != params_.end();
   }
 
   const rpc::LargeAttrValue& GetLargeAttr() const { return large_attr_; }
+
+  const std::string DebugString() const {
+    std::ostringstream ss;
+    ss << "GSParams: {";
+    for (auto const& kv : params_) {
+      ss << rpc::ParamKey_Name(static_cast<rpc::ParamKey>(kv.first)) << ": "
+         << kv.second.DebugString() << ", ";
+    }
+    ss << "}";
+    return ss.str();
+  }
 
  private:
   const std::map<int, rpc::AttrValue> params_;

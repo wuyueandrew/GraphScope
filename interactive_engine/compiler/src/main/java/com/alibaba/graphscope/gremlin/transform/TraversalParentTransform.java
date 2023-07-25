@@ -35,6 +35,7 @@ import org.apache.tinkerpop.gremlin.process.traversal.step.TraversalParent;
 import org.apache.tinkerpop.gremlin.process.traversal.step.filter.DedupGlobalStep;
 import org.apache.tinkerpop.gremlin.process.traversal.step.filter.WhereTraversalStep;
 import org.apache.tinkerpop.gremlin.process.traversal.step.map.*;
+import org.apache.tinkerpop.gremlin.structure.T;
 import org.javatuples.Pair;
 
 import java.util.*;
@@ -87,6 +88,34 @@ public interface TraversalParentTransform extends Function<TraversalParent, List
                                 "use valueMap(..) instead if there are multiple project keys");
                     }
                     return (new ExprResult()).addTagExpr("", Optional.of("@." + mapKeys[0]));
+                } else if (step instanceof LabelStep) {
+                    return (new ExprResult())
+                            .addTagExpr("", Optional.of("@." + T.label.getAccessor())); // @.~label
+                } else if (step instanceof IdStep) {
+                    return (new ExprResult())
+                            .addTagExpr("", Optional.of("@." + T.id.getAccessor())); // @.~id
+                } else if (step instanceof ElementMapStep) { // elementMap(..)
+                    StringBuilder stringBuilder = new StringBuilder();
+                    stringBuilder.append("{");
+                    // id
+                    stringBuilder.append("@." + ArgUtils.ID + ",");
+                    // label
+                    stringBuilder.append("@." + ArgUtils.LABEL + ",");
+                    // properties
+                    String[] mapKeys = ((ElementMapStep) step).getPropertyKeys();
+                    if (mapKeys.length > 0) {
+                        for (int i = 0; i < mapKeys.length; ++i) {
+                            if (i > 0) {
+                                stringBuilder.append(",");
+                            }
+                            stringBuilder.append("@." + mapKeys[i]);
+                        }
+                    } else {
+                        // elementMap() -> @.~all
+                        stringBuilder.append("@." + ArgUtils.PROPERTY_ALL);
+                    }
+                    stringBuilder.append("}");
+                    return (new ExprResult()).addTagExpr("", Optional.of(stringBuilder.toString()));
                 } else if (step instanceof SelectOneStep || step instanceof SelectStep) {
                     // select('a'), select('a').by()
                     // select('a').by('name'/values/valueMap)

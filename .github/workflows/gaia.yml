@@ -2,6 +2,7 @@ name: GraphScope GAIA CI
 
 on:
   # Trigger the workflow on push or pull request, but only for the main branch
+  workflow_dispatch:
   push:
     branches:
       - main
@@ -53,29 +54,31 @@ jobs:
 
     - name: Rust Format Check
       run: |
-        source ${HOME}/.graphscope_env
         cd ${GITHUB_WORKSPACE}/interactive_engine/executor && ./check_format.sh
+
+    - name: Build Pegasus and Test
+      run: |
+        echo $(pwd)
+        cd ${GITHUB_WORKSPACE}/interactive_engine/executor/engine/pegasus
+        cargo build --verbose
+        cargo test --verbose
 
     - name: Build Ir on Experimental Store and Csr Store
       run: |
-        source ${HOME}/.graphscope_env
         cd ${GITHUB_WORKSPACE}/interactive_engine/compiler
         make build
         make build rpc.target=start_rpc_server_csr
 
     - name: Ir Unit Test
       run: |
-        source ${HOME}/.graphscope_env
         cd ${GITHUB_WORKSPACE}/interactive_engine/compiler && make test
 
     - name: CommonType Unit Test
       run: |
-        source ${HOME}/.graphscope_env
         cd ${GITHUB_WORKSPACE}/interactive_engine/executor/common/dyn_type && cargo test
 
     - name: Store Unit Test
       run: |
-        source ${HOME}/.graphscope_env
         cd ${GITHUB_WORKSPACE}/interactive_engine/executor/store/exp_store && cargo test
         # TODO: fix ut in groot
         # cd ${GITHUB_WORKSPACE}/interactive_engine/executor/store/groot && cargo test
@@ -84,30 +87,28 @@ jobs:
 
     - name: Ir Integration Test on Experimental Store
       run: |
-        source ${HOME}/.graphscope_env
+        . ${HOME}/.graphscope_env
         cd ${GITHUB_WORKSPACE}/interactive_engine/compiler && ./ir_exprimental_ci.sh
 
     - name: Ir Integration Pattern Test on Experimental Store
       run: |
-        source ${HOME}/.graphscope_env
         cd ${GITHUB_WORKSPACE}
-        git clone -b master --single-branch --depth=1 https://github.com/7br/gstest.git
-        cd ${GITHUB_WORKSPACE}/interactive_engine/compiler && ./ir_exprimental_pattern_ci.sh
+        git clone -b master --single-branch --depth=1 https://github.com/7br/gstest.git /tmp/gstest
+        cd ${GITHUB_WORKSPACE}/interactive_engine/compiler && ./ir_exprimental_advanced_ci.sh
 
     - name: Ir Integration Test on Csr Store
       run: |
-        source ${HOME}/.graphscope_env
         cd ${GITHUB_WORKSPACE}/interactive_engine/compiler && ./ir_csr_ci.sh
 
     - name: Ir Integration Pattern Test on Csr Store
       run: |
-        source ${HOME}/.graphscope_env
         cd ${GITHUB_WORKSPACE}
         cd ${GITHUB_WORKSPACE}/interactive_engine/compiler && ./ir_csr_pattern_ci.sh
 
     - name: Upload GIE log
       if: failure()
       uses: actions/upload-artifact@v3
+      continue-on-error: true
       with:
         name: gie-log
         path: /var/log/graphscope

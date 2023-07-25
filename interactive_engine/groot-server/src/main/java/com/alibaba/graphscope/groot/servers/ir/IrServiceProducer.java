@@ -16,17 +16,17 @@
 
 package com.alibaba.graphscope.groot.servers.ir;
 
-import com.alibaba.graphscope.common.client.RpcChannelFetcher;
+import com.alibaba.graphscope.GraphServer;
+import com.alibaba.graphscope.common.client.channel.ChannelFetcher;
+import com.alibaba.graphscope.common.config.AuthConfig;
+import com.alibaba.graphscope.common.config.FrontendConfig;
 import com.alibaba.graphscope.common.config.PegasusConfig;
 import com.alibaba.graphscope.common.store.IrMetaFetcher;
 import com.alibaba.graphscope.compiler.api.schema.SchemaFetcher;
 import com.alibaba.graphscope.gremlin.integration.result.TestGraphFactory;
-import com.alibaba.graphscope.gremlin.service.IrGremlinServer;
 import com.alibaba.graphscope.groot.common.RoleType;
 import com.alibaba.graphscope.groot.common.config.CommonConfig;
 import com.alibaba.graphscope.groot.common.config.Configs;
-import com.alibaba.graphscope.groot.common.config.FrontendConfig;
-import com.alibaba.graphscope.groot.common.config.GremlinConfig;
 import com.alibaba.graphscope.groot.discovery.DiscoveryFactory;
 import com.alibaba.graphscope.groot.frontend.SnapshotUpdateCommitter;
 import com.alibaba.graphscope.groot.meta.MetaService;
@@ -35,11 +35,15 @@ import com.alibaba.graphscope.groot.servers.AbstractService;
 import com.alibaba.graphscope.groot.servers.ComputeServiceProducer;
 import com.alibaba.graphscope.groot.store.StoreService;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.util.HashMap;
 import java.util.Map;
 
 public class IrServiceProducer implements ComputeServiceProducer {
-    private Configs configs;
+    private static final Logger logger = LoggerFactory.getLogger(IrServiceProducer.class);
+    private final Configs configs;
 
     public IrServiceProducer(Configs configs) {
         this.configs = configs;
@@ -49,31 +53,24 @@ public class IrServiceProducer implements ComputeServiceProducer {
     public AbstractService makeGraphService(
             SchemaFetcher schemaFetcher, ChannelManager channelManager) {
         int executorCount = CommonConfig.STORE_NODE_COUNT.get(configs);
-        RpcChannelFetcher channelFetcher =
+        ChannelFetcher channelFetcher =
                 new RpcChannelManagerFetcher(channelManager, executorCount, RoleType.GAIA_RPC);
         com.alibaba.graphscope.common.config.Configs irConfigs = getConfigs();
         IrMetaFetcher irMetaFetcher = new GrootMetaFetcher(schemaFetcher);
-
         SnapshotUpdateCommitter updateCommitter = new SnapshotUpdateCommitter(channelManager);
-
         int frontendId = CommonConfig.NODE_IDX.get(configs);
         FrontendQueryManager queryManager =
                 new FrontendQueryManager(irMetaFetcher, frontendId, updateCommitter);
 
         return new AbstractService() {
-            private IrGremlinServer irGremlinServer =
-                    new IrGremlinServer(GremlinConfig.GREMLIN_PORT.get(configs));
+            private GraphServer graphServer =
+                    new GraphServer(
+                            irConfigs, channelFetcher, queryManager, TestGraphFactory.GROOT);
 
             @Override
             public void start() {
                 try {
-                    irGremlinServer.start(
-                            irConfigs,
-                            irMetaFetcher,
-                            channelFetcher,
-                            queryManager,
-                            TestGraphFactory.GROOT);
-
+                    this.graphServer.start();
                     queryManager.start();
                 } catch (Exception e) {
                     throw new RuntimeException(e);
@@ -83,8 +80,9 @@ public class IrServiceProducer implements ComputeServiceProducer {
             @Override
             public void stop() {
                 try {
-                    irGremlinServer.close();
-
+                    if (this.graphServer != null) {
+                        this.graphServer.close();
+                    }
                     queryManager.stop();
                 } catch (Exception e) {
                     throw new RuntimeException(e);
@@ -105,14 +103,24 @@ public class IrServiceProducer implements ComputeServiceProducer {
         // add pegasus config
         addToConfigMapIfExist(PegasusConfig.PEGASUS_HOSTS.getKey(), configMap);
         addToConfigMapIfExist(PegasusConfig.PEGASUS_WORKER_NUM.getKey(), configMap);
-        addToConfigMapIfExist(PegasusConfig.PEGASUS_TIMEOUT.getKey(), configMap);
         addToConfigMapIfExist(PegasusConfig.PEGASUS_BATCH_SIZE.getKey(), configMap);
         addToConfigMapIfExist(PegasusConfig.PEGASUS_OUTPUT_CAPACITY.getKey(), configMap);
         addToConfigMapIfExist(PegasusConfig.PEGASUS_MEMORY_LIMIT.getKey(), configMap);
         // add authentication
-        addToConfigMapIfExist(FrontendConfig.AUTH_USERNAME.getKey(), configMap);
-        addToConfigMapIfExist(FrontendConfig.AUTH_PASSWORD.getKey(), configMap);
-
+        addToConfigMapIfExist(AuthConfig.AUTH_USERNAME.getKey(), configMap);
+        addToConfigMapIfExist(AuthConfig.AUTH_PASSWORD.getKey(), configMap);
+        // add gremlin config
+        addToConfigMapIfExist(FrontendConfig.GREMLIN_SERVER_DISABLED.getKey(), configMap);
+        addToConfigMapIfExist(FrontendConfig.GREMLIN_SERVER_PORT.getKey(), configMap);
+        // add neo4j config
+        addToConfigMapIfExist(FrontendConfig.NEO4J_BOLT_SERVER_DISABLED.getKey(), configMap);
+        addToConfigMapIfExist(FrontendConfig.NEO4J_BOLT_SERVER_PORT.getKey(), configMap);
+        // add timeout config
+        addToConfigMapIfExist(FrontendConfig.QUERY_EXECUTION_TIMEOUT_MS.getKey(), configMap);
+        // add frontend server id
+        addToConfigMapIfExist(FrontendConfig.FRONTEND_SERVER_ID.getKey(), configMap);
+        // add frontend server num
+        addToConfigMapIfExist(FrontendConfig.FRONTEND_SERVER_NUM.getKey(), configMap);
         return new com.alibaba.graphscope.common.config.Configs(configMap);
     }
 

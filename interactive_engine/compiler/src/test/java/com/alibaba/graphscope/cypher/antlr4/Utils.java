@@ -17,21 +17,22 @@
 package com.alibaba.graphscope.cypher.antlr4;
 
 import com.alibaba.graphscope.common.ir.tools.GraphBuilder;
-import com.alibaba.graphscope.gremlin.plugin.script.AntlrCypherScriptEngine;
-
-import javax.script.Bindings;
-import javax.script.ScriptContext;
-import javax.script.SimpleBindings;
-import javax.script.SimpleScriptContext;
+import com.alibaba.graphscope.common.ir.tools.LogicalPlan;
+import com.alibaba.graphscope.cypher.antlr4.parser.CypherAntlr4Parser;
+import com.alibaba.graphscope.cypher.antlr4.visitor.GraphBuilderVisitor;
+import com.alibaba.graphscope.cypher.antlr4.visitor.LogicalPlanVisitor;
 
 public abstract class Utils {
     public static final GraphBuilder eval(String query) {
-        AntlrCypherScriptEngine scriptEngine = new AntlrCypherScriptEngine();
-        Bindings globalBindings = new SimpleBindings();
-        globalBindings.put(
-                "graph.builder", com.alibaba.graphscope.common.ir.Utils.mockGraphBuilder());
-        ScriptContext context = new SimpleScriptContext();
-        context.setBindings(globalBindings, ScriptContext.ENGINE_SCOPE);
-        return (GraphBuilder) scriptEngine.eval(query, context);
+        GraphBuilder graphBuilder = com.alibaba.graphscope.common.ir.Utils.mockGraphBuilder();
+        return new GraphBuilderVisitor(graphBuilder).visit(new CypherAntlr4Parser().parse(query));
+    }
+
+    public static LogicalPlan evalLogicalPlan(String query) {
+        GraphBuilder graphBuilder = com.alibaba.graphscope.common.ir.Utils.mockGraphBuilder();
+        LogicalPlanVisitor logicalPlanVisitor =
+                new LogicalPlanVisitor(
+                        graphBuilder, com.alibaba.graphscope.common.ir.Utils.schemaMeta);
+        return logicalPlanVisitor.visit(new CypherAntlr4Parser().parse(query));
     }
 }

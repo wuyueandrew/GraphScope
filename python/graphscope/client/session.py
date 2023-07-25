@@ -26,14 +26,16 @@ import gc
 import json
 import logging
 import os
-import pickle
 import signal
 import threading
 import time
 import uuid
 import warnings
+from typing import Any
+from typing import Union
 
 try:
+    import vineyard
     from kubernetes import client as kube_client
     from kubernetes import config as kube_config
 except ImportError:
@@ -52,7 +54,10 @@ from graphscope.config import GSConfig as gs_config
 from graphscope.deploy.hosts.cluster import HostsClusterLauncher
 from graphscope.deploy.kubernetes.cluster import KubernetesClusterLauncher
 from graphscope.deploy.kubernetes.utils import resolve_api_client
+from graphscope.framework.app import App
+from graphscope.framework.context import Context
 from graphscope.framework.dag import Dag
+from graphscope.framework.dag import DAGNode
 from graphscope.framework.errors import FatalError
 from graphscope.framework.errors import InvalidArgumentError
 from graphscope.framework.errors import K8sError
@@ -61,6 +66,8 @@ from graphscope.framework.graph import GraphDAGNode
 from graphscope.framework.operation import Operation
 from graphscope.framework.utils import decode_dataframe
 from graphscope.framework.utils import decode_numpy
+from graphscope.framework.utils import deprecated
+from graphscope.framework.utils import random_string
 from graphscope.interactive.query import InteractiveQuery
 from graphscope.proto import graph_def_pb2
 from graphscope.proto import message_pb2
@@ -142,13 +149,6 @@ class _FetchHandler(object):
             return DynamicVertexDataContext(context_dag_node, ret["context_key"])
         return Context(context_dag_node, ret["context_key"], ret["context_schema"])
 
-    def _rebuild_gremlin_results(self, seq, op_result: op_def_pb2.OpResult):
-        from graphscope.interactive.query import ResultSet
-
-        # get result set node as base
-        result_set_dag_node = self._fetches[seq]
-        return ResultSet(result_set_dag_node)
-
     def wrap_results(self, response: message_pb2.RunStepResponse):  # noqa: C901
         rets = list()
         for seq, op in enumerate(self._ops):
@@ -157,8 +157,6 @@ class _FetchHandler(object):
                     if op.output_types == types_pb2.RESULTS:
                         if op.type == types_pb2.RUN_APP:
                             rets.append(self._rebuild_context(seq, op_result))
-                        elif op.type == types_pb2.FETCH_GREMLIN_RESULT:
-                            rets.append(pickle.loads(op_result.result))
                         elif op.type == types_pb2.REPORT_GRAPH:
                             rets.append(OutArchive(op_result.result))
                         else:
@@ -166,8 +164,6 @@ class _FetchHandler(object):
                             rets.append(
                                 op_result.result.decode("utf-8", errors="ignore")
                             )
-                    if op.output_types == types_pb2.GREMLIN_RESULTS:
-                        rets.append(self._rebuild_gremlin_results(seq, op_result))
                     if op.output_types == types_pb2.GRAPH:
                         rets.append(self._rebuild_graph(seq, op_result))
                     if op.output_types == types_pb2.APP:
@@ -304,7 +300,7 @@ class Session(object):
         k8s_vineyard_deployment=gs_config.k8s_vineyard_deployment,
         k8s_vineyard_cpu=gs_config.k8s_vineyard_cpu,
         k8s_vineyard_mem=gs_config.k8s_vineyard_mem,
-        vineyard_shared_mem=gs_config.vineyard_shared_mem,
+        vineyard_shared_mem=None,
         k8s_engine_cpu=gs_config.k8s_engine_cpu,
         k8s_engine_mem=gs_config.k8s_engine_mem,
         k8s_mars_worker_cpu=gs_config.mars_worker_cpu,
@@ -315,6 +311,7 @@ class Session(object):
         k8s_engine_pod_node_selector=gs_config.k8s_engine_pod_node_selector,
         k8s_volumes=gs_config.k8s_volumes,
         k8s_waiting_for_delete=gs_config.k8s_waiting_for_delete,
+        k8s_deploy_mode=gs_config.k8s_deploy_mode,
         timeout_seconds=gs_config.timeout_seconds,
         dangling_timeout_seconds=gs_config.dangling_timeout_seconds,
         enabled_engines=gs_config.enabled_engines,
@@ -381,7 +378,8 @@ class Session(object):
 
             k8s_vineyard_mem (str, optional): Minimum number of memory request for vineyard container. Defaults to '512Mi'.
 
-            vineyard_shared_mem (str, optional): Init size of vineyard shared memory. Defaults to '4Gi'.
+            vineyard_shared_mem (str, optional): Init size of vineyard shared memory. Defaults to '4Gi' for Kubernetes and
+                half of the total memory for local sessions.
 
             k8s_engine_cpu (float, optional): Minimum number of CPU cores request for engine container. Defaults to 0.5.
 
@@ -482,6 +480,10 @@ class Session(object):
                 Expect this value to be greater than 5 (heartbeat interval).
                 Disable dangling check by setting -1.
 
+            k8s_deploy_mode (str, optional): the deploy mode of engines on the kubernetes cluster. Default to eager.
+                eager: create all engine pods at once
+                lazy: create engine pods when called
+
             k8s_waiting_for_delete (bool, optional): Waiting for service delete or not. Defaults to False.
 
             **kw (dict, optional): Other optional parameters will be put to :code:`**kw`.
@@ -524,6 +526,14 @@ class Session(object):
         # supress the grpc warnings, see also grpc/grpc#29103
         os.environ["GRPC_ENABLE_FORK_SUPPORT"] = "false"
 
+        if vineyard_shared_mem is None:
+            if cluster_type == "k8s":
+                vineyard_shared_mem = gs_config.vineyard_shared_mem
+            else:
+                vineyard_shared_mem = gs_config._local_vineyard_shared_mem
+        if not isinstance(vineyard_shared_mem, str):
+            vineyard_shared_mem = str(vineyard_shared_mem)
+
         self._config_params = {}
         self._accessable_params = (
             "addr",
@@ -560,6 +570,7 @@ class Session(object):
             "reconnect",
             "k8s_volumes",
             "k8s_waiting_for_delete",
+            "k8s_deploy_mode",
             "timeout_seconds",
             "dangling_timeout_seconds",
             "with_mars",
@@ -570,6 +581,10 @@ class Session(object):
             "show_log",
             "log_level",
         )
+
+        # the mapping table from old vineyard object id to new vineyard object id
+        self._vineyard_object_mapping_table = {}
+
         saved_locals = locals()
         for param in self._accessable_params:
             self._config_params[param] = saved_locals[param]
@@ -605,6 +620,7 @@ class Session(object):
                     ","
                 )
             )
+
             for item in engines:
                 if item not in valid_engines:
                     raise ValueError(
@@ -632,17 +648,7 @@ class Session(object):
         if kw:
             raise ValueError("Value not recognized: ", list(kw.keys()))
 
-        if self._config_params["addr"]:
-            logger.info(
-                "Connecting graphscope session with address: %s",
-                self._config_params["addr"],
-            )
-        else:
-            logger.info(
-                "Initializing graphscope session with parameters: %s",
-                self._config_params,
-            )
-
+        self._log_session_info()
         self._closed = False
 
         # coordinator service endpoint
@@ -660,7 +666,7 @@ class Session(object):
         #       "vineyard_socket": "...",
         #       "vineyard_rpc_endpoint": "..."
         #   }
-        self._engine_config: {} = None
+        self._engine_config: dict = None
 
         # interactive instance related graph map
         self._interactive_instance_dict = {}
@@ -701,8 +707,20 @@ class Session(object):
         return self._session_id
 
     @property
-    def dag(self):
+    def dag(self) -> Dag:
         return self._dag
+
+    def _log_session_info(self):
+        if self._config_params["addr"]:
+            logger.info(
+                "Connecting graphscope session with address: %s",
+                self._config_params["addr"],
+            )
+        else:
+            logger.info(
+                "Initializing graphscope session with parameters: %s",
+                self._config_params,
+            )
 
     def _load_config(self, path, silent=True):
         config_path = os.path.expandvars(os.path.expanduser(path))
@@ -763,6 +781,10 @@ class Session(object):
     def closed(self):
         return self._closed
 
+    @property
+    def disconnected(self):
+        return self._grpc_client is None or self._disconnected
+
     def eager(self):
         return self._config_params["mode"] == "eager"
 
@@ -775,7 +797,7 @@ class Session(object):
                     self._grpc_client.send_heartbeat()
                 except Exception as exc:
                     if heartbeat_failure_count == 0:
-                        logger.warning(exc)
+                        logger.warning("Failed to send heartbeat message", exc_info=exc)
                     heartbeat_failure_count = heartbeat_failure_count + 1
                     if heartbeat_failure_count > self._heartbeat_maximum_failures:
                         logger.error(
@@ -928,7 +950,7 @@ class Session(object):
             self._default_session.__exit__(None, None, None)
             self._default_session = None
 
-    def _wrapper(self, dag_node):
+    def _wrapper(self, dag_node: DAGNode) -> Union[DAGNode, App, Context, Graph, Any]:
         if self.eager():
             return self.run(dag_node)
         return dag_node
@@ -995,21 +1017,18 @@ class Session(object):
             # try to connect to exist coordinator
             self._coordinator_endpoint = self._config_params["addr"]
         elif self._cluster_type == types_pb2.K8S:
+            # if users only provide kube_config file path
+            if isinstance(self._config_params["k8s_client_config"], str):
+                self._config_params["k8s_client_config"] = {
+                    "config_file": self._config_params["k8s_client_config"]
+                }
             if isinstance(
                 self._config_params["k8s_client_config"],
                 kube_client.api_client.ApiClient,
             ):
                 api_client = self._config_params["k8s_client_config"]
             else:
-                try:
-                    api_client = resolve_api_client(
-                        self._config_params["k8s_client_config"]
-                    )
-                except kube_config.ConfigException as e:
-                    raise RuntimeError(
-                        "Kubernetes environment not found, you may want to"
-                        ' launch session locally with param cluster_type="hosts"'
-                    ) from e
+                api_client = self._get_api_client()
             self._launcher = KubernetesClusterLauncher(
                 api_client=api_client,
                 **self._config_params,
@@ -1080,6 +1099,154 @@ class Session(object):
         """Get configuration of the session."""
         return self._config_params
 
+    def _get_api_client(self):
+        try:
+            api_client = resolve_api_client(self._config_params["k8s_client_config"])
+        except kube_config.ConfigException as e:
+            raise RuntimeError(
+                "Kubernetes environment not found, you may want to"
+                ' launch session locally with param cluster_type="hosts"'
+            ) from e
+        return api_client
+
+    def _check_pvc_exists(self, pvc_name, pvc_namespace):
+        api_client = self._get_api_client()
+        _core_api = kube_client.CoreV1Api(api_client)
+        try:
+            _core_api.read_namespaced_persistent_volume_claim(
+                name=pvc_name,
+                namespace=pvc_namespace,
+            )
+        except kube_client.rest.ApiException as e:
+            raise RuntimeError(
+                f"PVC {pvc_name} not found in namespace {pvc_namespace}"
+            ) from e
+
+    def _check_vineyard_deployment_exists(
+        self, vineyard_deployment_name, vineyard_deployment_namespace
+    ):
+        api_client = self._get_api_client()
+        _app_api = kube_client.AppsV1Api(api_client)
+        try:
+            _app_api.read_namespaced_deployment(
+                name=vineyard_deployment_name,
+                namespace=vineyard_deployment_namespace,
+            )
+        except kube_client.rest.ApiException as e:
+            if e.status == 404:
+                raise RuntimeError(
+                    f"Vineyard deployment {vineyard_deployment_name} not found in namespace {vineyard_deployment_namespace}"
+                ) from e
+            else:
+                raise e
+
+    def store_to_pvc(self, graphIDs, path: str, pvc_name: str):
+        """
+        Stores the given graph IDs to the given path with the given PVC.
+        Also, if you want to store graphs of different sessions to the same pv,
+        you'd better to create different pvc for different sessions at first.
+
+        Notice, before calling this function, the KUBECONFIG environment variable
+        should be set to the path of your kubeconfig file. And you should make sure
+        that the pvc is bound to the pv and the pv's capacity is enough to store the
+        graphs.
+
+        The method uses the vineyardctl to create a kubernetes job to serialize
+        the selected graphs. For more information, see the vineyardctl documentation.
+
+        https://github.com/v6d-io/v6d/tree/main/k8s/cmd#vineyardctl-deploy-backup-job
+
+        Args:
+            graph_ids: The list of graph IDs to store.
+                       Supported types:
+                       - list: list of vineyard.ObjectID or graphscope.Graph
+            path: The path in the pv to which the pvc is bound.
+            pvc_name: The name of the PVC.
+
+        Raises:
+            RuntimeError: If the cluster type is not Kubernetes.
+        """
+        if self._cluster_type != types_pb2.K8S:
+            raise RuntimeError("Only support kubernetes cluster")
+        object_ids = []
+        for object in graphIDs:
+            if isinstance(object, Graph):
+                object_ids.append(object.vineyard_id)
+            else:
+                object_ids.append(vineyard.ObjectID(object))
+        object_ids = ",".join(repr(id) for id in object_ids)
+        vineyard_deployment_name = self._config_params["k8s_vineyard_deployment"]
+        namespace = self._config_params["k8s_namespace"]
+        self._check_vineyard_deployment_exists(vineyard_deployment_name, namespace)
+        self._check_pvc_exists(pvc_name, namespace)
+        # The next function will create a kubernetes job for backuping
+        # the specific graphIDs to the specific path of the specific pvc
+        vineyard.deploy.vineyardctl.deploy.backup_job(
+            backup_name="vineyard-backup-" + random_string(6),
+            vineyard_deployment_name=vineyard_deployment_name,
+            vineyard_deployment_namespace=namespace,
+            namespace=namespace,
+            path=path,
+            objectids=object_ids,
+            pvc_name=pvc_name,
+        )
+
+    def restore_from_pvc(self, path: str, pvc_name: str):
+        """
+        Restores the graphs from the given path in the given PVC.
+        Notice, before calling this function, the KUBECONFIG environment variable
+        should be set to the path of your kubeconfig file.
+
+        Args:
+            path: The path in the pv to which the pvc is bound.
+            pvc_name: The name of the PVC.
+
+        Raises:
+            RuntimeError: If the cluster type is not Kubernetes.
+        """
+        if self._cluster_type != types_pb2.K8S:
+            raise RuntimeError("Only support kubernetes cluster")
+        vineyard_deployment_name = self._config_params["k8s_vineyard_deployment"]
+        namespace = self._config_params["k8s_namespace"]
+        self._check_vineyard_deployment_exists(vineyard_deployment_name, namespace)
+        self._check_pvc_exists(pvc_name, namespace)
+        random_suffix = random_string(6)
+        vineyard.deploy.vineyardctl.deploy.recover_job(
+            recover_name="vineyard-recover-" + random_suffix,
+            vineyard_deployment_name=vineyard_deployment_name,
+            vineyard_deployment_namespace=namespace,
+            namespace=namespace,
+            recover_path=path,
+            pvc_name=pvc_name,
+        )
+
+        api_client = self._get_api_client()
+        _core_api = kube_client.CoreV1Api(api_client)
+        try:
+            config_map = _core_api.read_namespaced_config_map(
+                name="vineyard-recover-" + random_suffix + "-mapping-table",
+                namespace=namespace,
+            )
+        except kube_client.rest.ApiException as e:
+            if e.status == 404:
+                raise RuntimeError(
+                    f"ConfigMap vineyard-recover-{random_suffix}-mapping-table not found in namespace {namespace}"
+                ) from e
+            else:
+                raise e
+
+        # parse configmap data to the self._vineyard_object_mapping_table
+        self._vineyard_object_mapping_table = config_map.data
+
+    def get_vineyard_object_mapping_table(self):
+        """
+        Get the vineyard object mapping table
+        from the old object id to new object id
+        during storing and restoring graph to pvc
+        on the kubernetes cluster.
+        """
+        return self._vineyard_object_mapping_table
+
     def g(
         self,
         incoming_data=None,
@@ -1088,7 +1255,16 @@ class Session(object):
         generate_eid=True,
         retain_oid=True,
         vertex_map="global",
-    ):
+        compact_edges=False,
+        use_perfect_hash=False,
+    ) -> Union[Graph, GraphDAGNode]:
+        if (
+            isinstance(incoming_data, vineyard.ObjectID)
+            and repr(incoming_data) in self._vineyard_object_mapping_table
+        ):
+            graph_vineyard_id = self._vineyard_object_mapping_table[repr(incoming_data)]
+            logger.info("Restore graph from original graph: %s", graph_vineyard_id)
+            incoming_data = vineyard.ObjectID(graph_vineyard_id)
         return self._wrapper(
             GraphDAGNode(
                 self,
@@ -1098,6 +1274,8 @@ class Session(object):
                 generate_eid,
                 retain_oid,
                 vertex_map,
+                compact_edges,
+                use_perfect_hash,
             )
         )
 
@@ -1108,25 +1286,41 @@ class Session(object):
         with default_session(self):
             return graphscope.load_from(*args, **kwargs)
 
+    def load_from_gar(self, *args, **kwargs):
+        """Load a graph from gar format files within the session.
+        See more information in :meth:`graphscope.load_from_gar`.
+        """
+        with default_session(self):
+            return graphscope.load_from_gar(*args, **kwargs)
+
     def _run_on_local(self):
         self._config_params["port"] = None
         self._config_params["vineyard_socket"] = ""
 
-    def gremlin(self, graph):
-        """Get an interactive engine handler to execute gremlin queries.
+    @deprecated("Please use `sess.interactive` instead.")
+    def gremlin(self, graph, params=None):
+        """This method is going to be deprecated.
+        Use :meth:`interactive` to get an interactive engine handler supports
+        both gremlin and cypher queries
+        """
+        return self.interactive(graph, params)
+
+    def interactive(self, graph, params=None):
+        """Get an interactive engine handler to execute gremlin and cypher queries.
 
         It will return an instance of :class:`graphscope.interactive.query.InteractiveQuery`,
 
         .. code:: python
 
             >>> # close and recreate InteractiveQuery.
-            >>> interactive_query = sess.gremlin(g)
+            >>> interactive_query = sess.interactive(g)
             >>> interactive_query.close()
-            >>> interactive_query = sess.gremlin(g)
+            >>> interactive_query = sess.interactive(g)
 
         Args:
             graph (:class:`graphscope.framework.graph.GraphDAGNode`):
                 The graph to create interactive instance.
+            params: A dict consists of configurations of GIE instance.
 
         Raises:
             InvalidArgumentError:
@@ -1134,7 +1328,7 @@ class Session(object):
 
         Returns:
             :class:`graphscope.interactive.query.InteractiveQuery`:
-                InteractiveQuery to execute gremlin queries.
+                InteractiveQuery to execute gremlin and cypher queries.
         """
         if self._session_id != graph.session_id:
             raise RuntimeError(
@@ -1151,12 +1345,18 @@ class Session(object):
 
         object_id = graph.vineyard_id
         schema_path = graph.schema_path
-        endpoint = self._grpc_client.create_interactive_instance(object_id, schema_path)
-        interactive_query = InteractiveQuery(graph, endpoint)
+        (
+            gremlin_endpoint,
+            cypher_endpoint,
+        ) = self._grpc_client.create_interactive_instance(
+            object_id, schema_path, params
+        )
+        interactive_query = InteractiveQuery(graph, gremlin_endpoint, cypher_endpoint)
         self._interactive_instance_dict[object_id] = interactive_query
         graph._attach_interactive_instance(interactive_query)
         return interactive_query
 
+    @deprecated("Please use `graphlearn` instead.")
     def learning(self, graph, nodes=None, edges=None, gen_labels=None):
         """Start a graph learning engine.
 
@@ -1331,6 +1531,7 @@ def set_option(**kwargs):
         - k8s_waiting_for_delete
         - timeout_seconds
         - dataset_download_retries
+        - k8s_deploy_mode
 
     Args:
         kwargs: dict
@@ -1348,6 +1549,17 @@ def set_option(**kwargs):
 
     for k, v in kwargs.items():
         setattr(gs_config, k, v)
+
+        # use different default value for `vineyard_shared_memory` for
+        # different cluster types in pursuit of better user experience.
+        if k == "vineyard_shared_mem":
+            setattr(gs_config, "_local_vineyard_shared_mem", v)
+
+        # use string as log level
+        if k == "log_level" and isinstance(v, int):
+            level = logging.getLevelName(v)
+            if " " not in level:  # invalid number will returns "Level xxx"
+                setattr(gs_config, k, level.upper())
 
     GSLogger.update()
 
@@ -1386,6 +1598,7 @@ def get_option(key):
         - k8s_waiting_for_delete
         - timeout_seconds
         - dataset_download_retries
+        - k8s_deploy_mode
 
     Args:
         key: str
@@ -1420,12 +1633,12 @@ def default_session(session):
     return _default_session_stack.get_controller(session)
 
 
-def has_default_session():
+def has_default_session() -> bool:
     """True if default session exists in current context."""
     return not _default_session_stack.empty()
 
 
-def get_default_session():
+def get_default_session() -> Session:
     """Returns the default session for the current context.
 
     Note that a new session will be created if there is no
@@ -1451,14 +1664,14 @@ class _DefaultSessionStack(object):
         super().__init__()
         self.stack = []
 
-    def get_default(self):
+    def get_default(self) -> Session:
         if not self.stack:
             logger.info("Creating default session ...")
             sess = session(cluster_type="hosts", num_workers=1)
             sess.as_default()
         return self.stack[-1]
 
-    def empty(self):
+    def empty(self) -> bool:
         return len(self.stack) == 0
 
     def reset(self):
@@ -1489,6 +1702,8 @@ def g(
     generate_eid=True,
     retain_oid=True,
     vertex_map="global",
+    compact_edges=False,
+    use_perfect_hash=False,
 ):
     """Construct a GraphScope graph object on the default session.
 
@@ -1512,18 +1727,33 @@ def g(
         >>> g = graphscope.g() # creating graph on the session "sess"
     """
     return get_default_session().g(
-        incoming_data, oid_type, directed, generate_eid, retain_oid, vertex_map
+        incoming_data,
+        oid_type,
+        directed,
+        generate_eid,
+        retain_oid,
+        vertex_map,
+        compact_edges,
+        use_perfect_hash,
     )
 
 
-def gremlin(graph):
-    """Create an interactive engine and get the handler to execute the gremlin queries.
+@deprecated("Please use `graphscope.interactive` instead.")
+def gremlin(graph, params=None):
+    """This method is going to be deprecated in the future.
+    Use :meth:`graphscope.interactive` instead.
+    """
+    return interactive(graph, params)
 
-    See params detail in :meth:`graphscope.Session.gremlin`
+
+def interactive(graph, params=None):
+    """Create an interactive engine and get the handler to execute gremlin and cypher queries.
+
+    See params detail in :meth:`graphscope.Session.interactive`
 
     Returns:
         :class:`graphscope.interactive.query.InteractiveQueryDAGNode`:
-            InteractiveQuery to execute gremlin queries, evaluated in eager mode.
+            InteractiveQuery to execute gremlin and cypher queries, evaluated in eager mode.
 
     Examples:
 
@@ -1531,13 +1761,13 @@ def gremlin(graph):
 
         >>> import graphscope
         >>> g = graphscope.g()
-        >>> interactive_query = graphscope.gremlin()
+        >>> interactive_query = graphscope.interactive()
     """
     assert graph is not None, "graph cannot be None"
     assert (
         graph._session is not None
     ), "The graph object is invalid"  # pylint: disable=protected-access
-    return graph._session.gremlin(graph)  # pylint: disable=protected-access
+    return graph._session.interactive(graph, params)  # pylint: disable=protected-access
 
 
 def graphlearn(graph, nodes=None, edges=None, gen_labels=None):

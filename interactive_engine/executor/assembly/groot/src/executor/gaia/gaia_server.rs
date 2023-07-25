@@ -21,14 +21,17 @@ use std::time::Duration;
 
 use gaia_pegasus::Configuration as GaiaConfig;
 use global_query::GlobalGraph;
+use graph_proxy::{apis::PegasusClusterInfo, create_gs_store, GrootMultiPartition};
 use groot_store::api::PartitionId;
 use groot_store::db::api::{GraphConfig, GraphResult};
 use groot_store::db::graph::store::GraphStore;
 use pegasus_network::config::{NetworkConfig, ServerAddr};
 use pegasus_network::SimpleServerDetector;
 use pegasus_server::rpc::{start_all, RPCServerConfig, ServiceStartListener};
-use runtime_integration::{InitializeJobAssembly, QueryGrootGraph};
+use runtime::initialize_job_assembly;
 use tokio::runtime::Runtime;
+
+use crate::global_query::GraphPartitionManager;
 
 pub struct GaiaServer {
     config: Arc<GraphConfig>,
@@ -53,12 +56,14 @@ impl GaiaServer {
     }
 
     pub fn add_partition(&mut self, partition_id: PartitionId, graph_partition: Arc<GraphStore>) {
+        trace!("add_partition");
         Arc::get_mut(&mut self.graph)
             .unwrap()
             .add_partition(partition_id, graph_partition);
     }
 
     pub fn update_partition_routing(&mut self, partition_id: PartitionId, worker_id: u32) {
+        trace!("update_partition_routing");
         Arc::get_mut(&mut self.graph)
             .unwrap()
             .update_partition_routing(partition_id, worker_id);
@@ -69,8 +74,20 @@ impl GaiaServer {
         let gaia_rpc_config = make_gaia_rpc_config(self.config.clone());
         info!("Server config {:?}\nRPC config {:?}", gaia_config, gaia_rpc_config);
         let (server_port, rpc_port) = self.rpc_runtime.block_on(async {
-            let query = QueryGrootGraph::new(self.graph.clone(), self.graph.clone());
-            let job_compiler = query.initialize_job_assembly();
+            let column_filter_push_down = false;
+            #[cfg(feature = "column_filter_push_down")]
+            let column_filter_push_down = true;
+            let cluster_info = Arc::new(PegasusClusterInfo::default());
+            let gs_store = create_gs_store(
+                self.graph.clone(),
+                self.graph.clone(),
+                self.graph.get_process_partition_list(),
+                cluster_info.clone(),
+                true,
+                column_filter_push_down,
+            );
+            let partition_info = GrootMultiPartition::new(self.graph.clone());
+            let job_compiler = initialize_job_assembly(gs_store, Arc::new(partition_info), cluster_info);
             let service_listener = GaiaServiceListener::default();
             let service_listener_clone = service_listener.clone();
             self.rpc_runtime.spawn(async move {
@@ -98,6 +115,7 @@ impl GaiaServer {
     }
 
     pub fn update_peer_view(&self, peer_view: Vec<(u64, ServerAddr)>) {
+        trace!("update_peer_view");
         self.detector
             .update_peer_view(peer_view.into_iter());
     }
@@ -233,7 +251,7 @@ impl GaiaServiceListener {
 
 impl ServiceStartListener for GaiaServiceListener {
     fn on_rpc_start(&mut self, server_id: u64, addr: SocketAddr) -> std::io::Result<()> {
-        info!("RPC server of server[{}] start on {}", server_id, addr);
+        trace!("RPC server of server[{}] start on {}", server_id, addr);
         let mut rpc_addr = self
             .rpc_addr
             .lock()
@@ -243,7 +261,7 @@ impl ServiceStartListener for GaiaServiceListener {
     }
 
     fn on_server_start(&mut self, server_id: u64, addr: SocketAddr) -> std::io::Result<()> {
-        info!("compute server[{}] start on {}", server_id, addr);
+        trace!("compute server[{}] start on {}", server_id, addr);
         let mut server_addr = self
             .server_addr
             .lock()

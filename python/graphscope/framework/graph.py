@@ -29,7 +29,7 @@ from typing import Union
 
 try:
     import vineyard
-except ImportError:
+except (ImportError, TypeError):
     vineyard = None
 
 from graphscope.framework import dag_utils
@@ -54,7 +54,17 @@ class GraphInterface(metaclass=ABCMeta):
 
     def __init__(self):
         self._session = None
-        self._directed = False
+        self._directed = True
+        self._generate_eid = True
+        self._retain_oid = True
+        self._oid_type = "int64"
+        self._vertex_map = graph_def_pb2.GLOBAL_VERTEX_MAP
+        self._compact_edges = False
+        self._use_perfect_hash = False
+
+    @property
+    def session_id(self):
+        raise NotImplementedError
 
     @abstractmethod
     def add_column(self, results, selector):
@@ -89,7 +99,11 @@ class GraphInterface(metaclass=ABCMeta):
     def save_to(self, path, **kwargs):
         raise NotImplementedError
 
+    @classmethod
     def load_from(cls, path, sess, **kwargs):
+        raise NotImplementedError
+
+    def archive(self, path, **kwargs):
         raise NotImplementedError
 
     @abstractmethod
@@ -184,7 +198,10 @@ class GraphInterface(metaclass=ABCMeta):
         config[types_pb2.OID_TYPE] = utils.s_to_attr(self._oid_type)
         config[types_pb2.VID_TYPE] = utils.s_to_attr("uint64_t")
         config[types_pb2.IS_FROM_VINEYARD_ID] = utils.b_to_attr(False)
+        config[types_pb2.IS_FROM_GAR] = utils.b_to_attr(False)
         config[types_pb2.VERTEX_MAP_TYPE] = utils.i_to_attr(self._vertex_map)
+        config[types_pb2.COMPACT_EDGES] = utils.b_to_attr(self._compact_edges)
+        config[types_pb2.USE_PERFECT_HASH] = utils.b_to_attr(self._use_perfect_hash)
         return dag_utils.create_graph(
             self.session_id, graph_def_pb2.ARROW_PROPERTY, inputs=None, attrs=config
         )
@@ -227,7 +244,9 @@ class GraphDAGNode(DAGNode, GraphInterface):
         directed=True,
         generate_eid=True,
         retain_oid=True,
-        vertex_map="global",
+        vertex_map: Union[str, int] = "global",
+        compact_edges=False,
+        use_perfect_hash=False,
     ):
         """Construct a :class:`GraphDAGNode` object.
 
@@ -243,11 +262,14 @@ class GraphDAGNode(DAGNode, GraphInterface):
 
             oid_type: (str, optional): Type of vertex original id. Defaults to "int64".
             directed: (bool, optional): Directed graph or not. Defaults to True.
-            generate_eid: (bool, optional): Generate id for each edge when setted True. Defaults to True.
-            retain_oid: (bool, optional): Keep original ID in vertex table when setted True. Defaults to True.
+            generate_eid: (bool, optional): Generate id for each edge when set True. Defaults to True.
+            retain_oid: (bool, optional): Keep original ID in vertex table when set True. Defaults to True.
             vertex_map (str, optional): Indicate use global vertex map or local vertex map. Can be "global" or "local".
                 Defaults to global.
-
+            compact_edges (bool, optional): Compact edges (CSR) using varint and delta encoding. Defaults to False.
+                Note that compact edges helps to half the memory usage of edges in graph data structure, but may cause
+                at most 10%~20% performance degeneration in some algorithms. Defaults to False.
+            use_perfect_hash (bool, optional): Use perfect hash in vertex map to optimize the memory usage. Defaults to False.
         """
 
         super().__init__()
@@ -261,6 +283,8 @@ class GraphDAGNode(DAGNode, GraphInterface):
         self._retain_oid = retain_oid
         self._graph_type = graph_def_pb2.ARROW_PROPERTY
         self._vertex_map = utils.vertex_map_type_to_enum(vertex_map)
+        self._compact_edges = compact_edges
+        self._use_perfect_hash = use_perfect_hash
 
         # list of pair <parent_op_key, VertexLabel/EdgeLabel>
         self._unsealed_vertices_and_edges = list()
@@ -272,6 +296,13 @@ class GraphDAGNode(DAGNode, GraphInterface):
         # add op to dag
         self._resolve_op(incoming_data)
         self._session.dag.add_op(self._op)
+
+        # statically create the unload op, as the op may change, the
+        # unload op should be refreshed as well.
+        if self._op is None:
+            self._unload_op = None
+        else:
+            self._unload_op = dag_utils.unload_graph(self)
 
     @property
     def v_labels(self):
@@ -322,6 +353,8 @@ class GraphDAGNode(DAGNode, GraphInterface):
             self._generate_eid,
             self._retain_oid,
             self._vertex_map,
+            self._compact_edges,
+            self._use_perfect_hash,
         )
         graph_dag_node._base_graph = self
         return graph_dag_node
@@ -354,6 +387,8 @@ class GraphDAGNode(DAGNode, GraphInterface):
                 self._op = self._from_nx_graph(incoming_data)
             else:
                 raise RuntimeError("Not supported incoming data.")
+        # update the unload op
+        self._unload_op = dag_utils.unload_graph(self)
 
     def to_numpy(self, selector, vertex_range=None):
         """Select some elements of the graph and output to numpy.
@@ -398,6 +433,16 @@ class GraphDAGNode(DAGNode, GraphInterface):
         op = dag_utils.graph_to_dataframe(self, selector, vertex_range)
         return ResultDAGNode(self, op)
 
+    def archive(self, path):
+        """Archive the graph to gar format with graph yaml file path.
+
+        Args:
+            path (str): The graph yaml file path describe how to archive the graph.
+        """
+        check_argument(self.graph_type == graph_def_pb2.ARROW_PROPERTY)
+        op = dag_utils.archive_graph(self, path)
+        return ArchivedGraph(self._session, op)
+
     def to_directed(self):
         op = dag_utils.to_directed(self)
         graph_dag_node = GraphDAGNode(self._session, op)
@@ -408,7 +453,9 @@ class GraphDAGNode(DAGNode, GraphInterface):
         graph_dag_node = GraphDAGNode(self._session, op)
         return graph_dag_node
 
-    def add_vertices(self, vertices, label="_", properties=None, vid_field=0):
+    def add_vertices(
+        self, vertices, label="_", properties=None, vid_field: Union[int, str] = 0
+    ):
         """Add vertices to the graph, and return a new graph.
 
         Args:
@@ -424,6 +471,16 @@ class GraphDAGNode(DAGNode, GraphInterface):
             :class:`graphscope.framework.graph.GraphDAGNode`:
                 A new graph with vertex added, evaluated in eager mode.
         """
+        if self._vertex_map == graph_def_pb2.LOCAL_VERTEX_MAP:
+            raise ValueError(
+                "Cannot incrementally add vertices to graphs with local vertex map, "
+                "please use `graphscope.load_from()` instead."
+            )
+        if self._compact_edges:
+            raise ValueError(
+                "Cannot incrementally add vertices to graphs with compacted edges, "
+                "please use `graphscope.load_from()` instead."
+            )
         if label in self._v_labels:
             raise ValueError(f"Label {label} already existed in graph.")
         if not self._v_labels and self._e_labels:
@@ -454,6 +511,8 @@ class GraphDAGNode(DAGNode, GraphInterface):
             self._generate_eid,
             self._retain_oid,
             self._vertex_map,
+            self._compact_edges,
+            self._use_perfect_hash,
         )
         graph_dag_node._v_labels = v_labels
         graph_dag_node._e_labels = self._e_labels
@@ -469,8 +528,8 @@ class GraphDAGNode(DAGNode, GraphInterface):
         properties=None,
         src_label=None,
         dst_label=None,
-        src_field=0,
-        dst_field=1,
+        src_field: Union[int, str] = 0,
+        dst_field: Union[int, str] = 1,
     ):
         """Add edges to the graph, and return a new graph.
         Here the src_label and dst_label must be both specified or both unspecified,
@@ -506,6 +565,11 @@ class GraphDAGNode(DAGNode, GraphInterface):
             :class:`graphscope.framework.graph.GraphDAGNode`:
                 A new graph with edge added, evaluated in eager mode.
         """
+        if self._compact_edges:
+            raise ValueError(
+                "Cannot incrementally add edges to graphs with compacted edges, "
+                "please use `graphscope.load_from()` instead."
+            )
         if src_label is None and dst_label is None:
             check_argument(
                 len(self._v_labels) <= 1,
@@ -609,6 +673,8 @@ class GraphDAGNode(DAGNode, GraphInterface):
             self._generate_eid,
             self._retain_oid,
             self._vertex_map,
+            self._compact_edges,
+            self._use_perfect_hash,
         )
         graph_dag_node._v_labels = v_labels
         graph_dag_node._e_labels = e_labels
@@ -646,7 +712,13 @@ class GraphDAGNode(DAGNode, GraphInterface):
             results._check_selector(value)
         selector = json.dumps(selector)
         op = dag_utils.add_column(self, results, selector)
-        graph_dag_node = GraphDAGNode(self._session, op, vertex_map=self._vertex_map)
+        graph_dag_node = GraphDAGNode(
+            self._session,
+            op,
+            vertex_map=self._vertex_map,
+            compact_edges=self._compact_edges,
+            use_perfect_hash=self._use_perfect_hash,
+        )
         graph_dag_node._base_graph = self
         return graph_dag_node
 
@@ -662,8 +734,7 @@ class GraphDAGNode(DAGNode, GraphInterface):
         Returns:
             :class:`graphscope.framework.graph.UnloadedGraph`: Evaluated in eager mode.
         """
-        op = dag_utils.unload_graph(self)
-        return UnloadedGraph(self._session, op)
+        return UnloadedGraph(self._session, self._unload_op)
 
     def project(
         self,
@@ -687,6 +758,19 @@ class GraphDAGNode(DAGNode, GraphInterface):
                 A new graph projected from the property graph, evaluated in eager mode.
         """
         check_argument(self.graph_type == graph_def_pb2.ARROW_PROPERTY)
+        if isinstance(vertices, (list, set)) or isinstance(edges, (list, set)):
+            raise ValueError(
+                "\nThe project vertices or edges cannot be a set or a list, rather, a dict is expected, \n"
+                "where the key is the label name and the value is a list of property name. E.g.,\n"
+                "\n"
+                "    g.project(vertices={'person': ['name', 'age']},\n"
+                "              edges={'knows': ['weight']})\n"
+                "\n"
+                "The property list for vertices and edges can be empty if not needed, e.g.,\n"
+                "\n"
+                "    g.project(vertices={'person': []}, edges={'knows': []})\n"
+            )
+
         op = dag_utils.project_arrow_property_graph(
             self, json.dumps(vertices), json.dumps(edges)
         )
@@ -699,6 +783,8 @@ class GraphDAGNode(DAGNode, GraphInterface):
             self._generate_eid,
             self._retain_oid,
             self._vertex_map,
+            self._compact_edges,
+            self._use_perfect_hash,
         )
         graph_dag_node._base_graph = self
         return graph_dag_node
@@ -738,6 +824,7 @@ class Graph(GraphInterface):
         # copy and set op evaluated
         self._graph_node.op = deepcopy(self._graph_node.op)
         self._graph_node.evaluated = True
+        self._graph_node._unload_op = dag_utils.unload_graph(self._graph_node)
         self._session.dag.add_op(self._graph_node.op)
 
         self._key = None
@@ -747,6 +834,8 @@ class Graph(GraphInterface):
         self._detached = False
 
         self._vertex_map = graph_node._vertex_map
+        self._compact_edges = graph_node._compact_edges
+        self._use_perfect_hash = graph_node._use_perfect_hash
 
         self._interactive_instance_list = []
         self._learning_instance_list = []
@@ -763,6 +852,8 @@ class Graph(GraphInterface):
         self._key = graph_def.key
         self._directed = graph_def.directed
         self._is_multigraph = graph_def.is_multigraph
+        self._compact_edges = graph_def.compact_edges
+        self._use_perfect_hash = graph_def.use_perfect_hash
         vy_info = graph_def_pb2.VineyardInfoPb()
         graph_def.extension.Unpack(vy_info)
         self._vineyard_id = vy_info.vineyard_id
@@ -832,14 +923,13 @@ class Graph(GraphInterface):
         edata_type = utils.data_type_to_cpp(self._schema.edata_type)
         vertex_map_type = utils.vertex_map_type_to_cpp(self._vertex_map)
         vertex_map_type = f"{vertex_map_type}<{oid_type},{vid_type}>"
+        compact_type = "true" if self._compact_edges else "false"
         if self._graph_type == graph_def_pb2.ARROW_PROPERTY:
-            template = (
-                f"vineyard::ArrowFragment<{oid_type},{vid_type},{vertex_map_type}>"
-            )
+            template = f"vineyard::ArrowFragment<{oid_type},{vid_type},{vertex_map_type},{compact_type}>"
         elif self._graph_type == graph_def_pb2.ARROW_PROJECTED:
-            template = f"gs::ArrowProjectedFragment<{oid_type},{vid_type},{vdata_type},{edata_type},{vertex_map_type}>"
+            template = f"gs::ArrowProjectedFragment<{oid_type},{vid_type},{vdata_type},{edata_type},{vertex_map_type},{compact_type}>"  # noqa: E501
         elif self._graph_type == graph_def_pb2.ARROW_FLATTENED:
-            template = f"ArrowFlattenedFragmen<{oid_type},{vid_type},{vdata_type},{edata_type}>"
+            template = f"ArrowFlattenedFragment<{oid_type},{vid_type},{vdata_type},{edata_type},{compact_type}>"
         elif self._graph_type == graph_def_pb2.DYNAMIC_PROJECTED:
             template = f"gs::DynamicProjectedFragment<{vdata_type},{edata_type}>"
         else:
@@ -995,49 +1085,17 @@ class Graph(GraphInterface):
     def save_to(self, path, **kwargs):
         """Serialize graph to a location.
         The meta and data of graph is dumped to specified location,
-        and can be restored by `Graph.deserialize` in other sessions.
+        and can be restored by `Graph.load_from` in other sessions.
 
         Each worker will write a `path_{worker_id}.meta` file and
         a `path_{worker_id}` file to storage.
         Args:
             path (str): supported storages are local, hdfs, oss, s3
         """
-        try:
-            import vineyard
-            import vineyard.io
-        except ImportError:
-            raise RuntimeError(
-                "Saving context to locations requires 'vineyard', "
-                "please install those two dependencies via "
-                "\n"
-                "\n"
-                "    pip3 install vineyard vineyard-io"
-                "\n"
-                "\n"
-            )
 
-        sess = self._session
-        deployment = "kubernetes" if sess.info["type"] == "k8s" else "ssh"
-        conf = sess.info["engine_config"]
-        vineyard_endpoint = conf["vineyard_rpc_endpoint"]
-        vineyard_ipc_socket = conf["vineyard_socket"]
-        if sess.info["type"] == "k8s":
-            hosts = [
-                "{}:{}".format(sess.info["namespace"], s)
-                for s in sess.info["engine_hosts"].split(",")
-            ]
-        else:  # type == "hosts"
-            hosts = sess.info["engine_hosts"].split(",")
-        vineyard.io.serialize(
-            path,
-            vineyard.ObjectID(self._vineyard_id),
-            type="global",
-            vineyard_ipc_socket=vineyard_ipc_socket,
-            vineyard_endpoint=vineyard_endpoint,
-            storage_options=kwargs,
-            deployment=deployment,
-            hosts=hosts,
-        )
+        op = dag_utils.save_graph_to(self, path, self._vineyard_id, **kwargs)
+        self._session.dag.add_op(op)
+        return self._session._wrapper(op)
 
     @classmethod
     def load_from(cls, path, sess, **kwargs):
@@ -1055,43 +1113,22 @@ class Graph(GraphInterface):
             `Graph`: A new graph object. Schema and data is supposed to be
                 identical with the one that called serialized method.
         """
-        try:
-            import vineyard
-            import vineyard.io
-        except ImportError:
-            raise RuntimeError(
-                "Saving context to locations requires 'vineyard', "
-                "please install those two dependencies via "
-                "\n"
-                "\n"
-                "    pip3 install vineyard vineyard-io"
-                "\n"
-                "\n"
-            )
+        op = dag_utils.load_graph_from(path, sess, **kwargs)
+        return sess._wrapper(GraphDAGNode(sess, op))
 
-        deployment = "kubernetes" if sess.info["type"] == "k8s" else "ssh"
-        conf = sess.info["engine_config"]
-        vineyard_endpoint = conf["vineyard_rpc_endpoint"]
-        vineyard_ipc_socket = conf["vineyard_socket"]
-        if sess.info["type"] == "k8s":
-            hosts = [
-                "{}:{}".format(sess.info["namespace"], s)
-                for s in sess.info["engine_hosts"].split(",")
-            ]
-        else:  # type == "hosts"
-            hosts = sess.info["engine_hosts"].split(",")
-        graph_id = vineyard.io.deserialize(
-            path,
-            type="global",
-            vineyard_ipc_socket=vineyard_ipc_socket,
-            vineyard_endpoint=vineyard_endpoint,
-            storage_options=kwargs,
-            deployment=deployment,
-            hosts=hosts,
-        )
-        return sess._wrapper(GraphDAGNode(sess, vineyard.ObjectID(graph_id)))
+    def archive(self, path):
+        """Archive graph gar format files base on the graph info.
+        The meta and data of graph is dumped to specified location,
+        and can be restored by `Graph.deserialize` in other sessions.
 
-    def add_vertices(self, vertices, label="_", properties=None, vid_field=0):
+        Args:
+            path (str): the graph info file path.
+        """
+        return self._session._wrapper(self._graph_node.archive(path))
+
+    def add_vertices(
+        self, vertices, label="_", properties=None, vid_field: Union[int, str] = 0
+    ) -> Union["Graph", GraphDAGNode]:
         if not self.loaded():
             raise RuntimeError("The graph is not loaded")
         return self._session._wrapper(
@@ -1105,9 +1142,9 @@ class Graph(GraphInterface):
         properties=None,
         src_label=None,
         dst_label=None,
-        src_field=0,
-        dst_field=1,
-    ):
+        src_field: Union[int, str] = 0,
+        dst_field: Union[int, str] = 1,
+    ) -> Union["Graph", GraphDAGNode]:
         if not self.loaded():
             raise RuntimeError("The graph is not loaded")
         return self._session._wrapper(
@@ -1120,7 +1157,7 @@ class Graph(GraphInterface):
         self,
         vertices: Mapping[str, Union[List[str], None]],
         edges: Mapping[str, Union[List[str], None]],
-    ):
+    ) -> Union["Graph", GraphDAGNode]:
         if not self.loaded():
             raise RuntimeError("The graph is not loaded")
         return self._session._wrapper(self._graph_node.project(vertices, edges))
@@ -1143,16 +1180,16 @@ class Graph(GraphInterface):
         for instance in self._interactive_instance_list:
             try:
                 instance.close()
-            except Exception as e:  # pylint: disable=broad-except,invalid-name
-                logger.error("Failed to close interactive instances: %s", e)
+            except Exception:  # pylint: disable=broad-except
+                logger.exception("Failed to close interactive instances")
         self._interactive_instance_list.clear()
 
     def _close_learning_instances(self):
         for instance in self._learning_instance_list:
             try:
                 instance.close()
-            except Exception as e:  # pylint: disable=broad-except,invalid-name
-                logger.error("Failed to close interactive instances: %s", e)
+            except Exception:  # pylint: disable=broad-except
+                logger.exception("Failed to close interactive instances")
         self._learning_instance_list.clear()
 
 
@@ -1160,6 +1197,17 @@ class UnloadedGraph(DAGNode):
     """Unloaded graph node in a DAG."""
 
     def __init__(self, session, op):
+        self._session = session
+        self._op = op
+        # add op to dag
+        self._session.dag.add_op(self._op)
+
+
+class ArchivedGraph(DAGNode):
+    """Archived graph node in a DAG"""
+
+    def __init__(self, session, op):
+        super().__init__()
         self._session = session
         self._op = op
         # add op to dag

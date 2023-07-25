@@ -66,7 +66,7 @@ public class HepPlannerTest {
                         .getV(getVConfig)
                         .range(1, 3)
                         .pathOpt(GraphOpt.PathExpandPath.SIMPLE)
-                        .resultOpt(GraphOpt.PathExpandResult.AllV)
+                        .resultOpt(GraphOpt.PathExpandResult.ALL_V)
                         .build();
         RelNode sentence =
                 builder.source(
@@ -82,8 +82,8 @@ public class HepPlannerTest {
                         .filter(
                                 builder.call(
                                         GraphStdOperatorTable.EQUALS,
-                                        pxdBuilder.variable("z", "age"),
-                                        pxdBuilder.literal(10)))
+                                        builder.variable("z", "age"),
+                                        builder.literal(10)))
                         .build();
         RelOptPlanner planner = Utils.mockPlanner(FilterMatchRule.Config.DEFAULT.toRule());
         planner.setRoot(before);
@@ -95,8 +95,8 @@ public class HepPlannerTest {
                     + "  GraphLogicalPathExpand(expand=[GraphLogicalExpand(tableConfig=[{isAll=false,"
                     + " tables=[knows]}], alias=[DEFAULT], opt=[OUT])\n"
                     + "], getV=[GraphLogicalGetV(tableConfig=[{isAll=false, tables=[person]}],"
-                    + " alias=[z], opt=[END])\n"
-                    + "], offset=[1], fetch=[3], path_opt=[SIMPLE], result_opt=[AllV],"
+                    + " alias=[DEFAULT], opt=[END])\n"
+                    + "], offset=[1], fetch=[3], path_opt=[SIMPLE], result_opt=[ALL_V],"
                     + " alias=[DEFAULT])\n"
                     + "    GraphLogicalSource(tableConfig=[{isAll=false, tables=[person]}],"
                     + " alias=[x], opt=[VERTEX])\n"

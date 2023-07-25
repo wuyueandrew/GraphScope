@@ -8,6 +8,37 @@
   <version>${revision}</version>
 
   <name>InteractiveEngine</name>
+
+  <description>Distributed system for analyzing large and complex graph structures in an exploratory manner</description>
+  <url>https://github.com/alibaba/GraphScope</url>
+  <organization>
+    <name>Alibaba Group Holding Ltd.</name>
+    <url>https://github.com/alibaba</url>
+  </organization>
+
+  <licenses>
+    <license>
+      <name>The Apache Software License, Version 2.0</name>
+      <url>http://www.apache.org/licenses/LICENSE-2.0.txt</url>
+      <distribution>repo</distribution>
+    </license>
+  </licenses>
+
+  <developers>
+    <developer>
+      <name>Siyuan Zhang</name>
+      <email>siyuan0322@gmail.com</email>
+      <organization>Alibaba</organization>
+    </developer>
+  </developers>
+
+  <scm>
+    <tag>main</tag>
+    <connection>scm:git:git://github.com/alibaba/GraphScope.git</connection>
+    <developerConnection>scm:git:ssh://github.com:alibaba/GraphScope.git</developerConnection>
+    <url>http://github.com/alibaba/GraphScope/tree/master</url>
+  </scm>
+
   <profiles>
     <!-- DO NOT CHANGE THE *ORDER* IN WHICH THESE PROFILES ARE DEFINED! -->
     <profile>
@@ -20,6 +51,9 @@
     </profile>
     <profile>
       <id>graphscope</id>
+      <activation>
+        <activeByDefault>true</activeByDefault>
+      </activation>
       <properties>
         <rust.compile.target>v6d</rust.compile.target>
       </properties>
@@ -37,46 +71,81 @@
       <id>groot</id>
       <properties>
         <rust.compile.target>groot</rust.compile.target>
+        <scala.version>2.13.9</scala.version>
       </properties>
       <modules>
         <module>assembly</module>
         <module>common</module>
-        <module>executor</module>
         <module>data-load-tool</module>
+        <module>executor</module>
         <module>groot-module</module>
         <module>groot-server</module>
         <module>lgraph</module>
-        <module>sdk</module>
+        <module>groot-client</module>
         <module>sdk-common</module>
         <module>executor/engine/pegasus/clients/java/client</module>
         <module>compiler</module>
       </modules>
     </profile>
     <profile>
-      <id>default</id>
-      <activation>
-        <activeByDefault>true</activeByDefault>
-      </activation>
+      <id>groot-data-load</id>
+      <properties>
+        <scala.version>2.12.10</scala.version>
+      </properties>
       <modules>
-        <module>assembly</module>
         <module>common</module>
         <module>data-load-tool</module>
-        <module>executor</module>
-        <module>frontend</module>
-        <module>groot-module</module>
-        <module>groot-server</module>
-        <module>lgraph</module>
-        <module>sdk</module>
+        <module>groot-client</module>
         <module>sdk-common</module>
-        <module>tests</module>
-        <module>executor/engine/pegasus/clients/java/client</module>
-        <module>compiler</module>
       </modules>
+      <build>
+        <plugins>
+            <plugin>
+              <artifactId>maven-compiler-plugin</artifactId>
+              <configuration>
+                <source>1.8</source>
+                <target>1.8</target>
+              </configuration>
+            </plugin>
+        </plugins>
+      </build>
+    </profile>
+    <profile>
+      <id>release</id>
+      <modules>
+        <module>groot-client</module>
+      </modules>
+      <build>
+        <plugins>
+            <plugin>
+              <groupId>org.apache.maven.plugins</groupId>
+              <artifactId>maven-gpg-plugin</artifactId>
+            </plugin>
+            <plugin>
+              <groupId>org.apache.maven.plugins</groupId>
+              <artifactId>maven-deploy-plugin</artifactId>
+            </plugin>
+            <plugin>
+              <groupId>org.sonatype.plugins</groupId>
+              <artifactId>nexus-staging-maven-plugin</artifactId>
+              <executions>
+                <execution>
+                  <id>default-deploy</id>
+                  <phase>deploy</phase>
+                  <goals>
+                    <goal>deploy</goal>
+                  </goals>
+                </execution>
+              </executions>
+            </plugin>
+        </plugins>
+      </build>
     </profile>
   </profiles>
 
   <properties>
     <revision>0.0.1-SNAPSHOT</revision>
+    <staging.repository></staging.repository>
     <rust.compile.skip>false</rust.compile.skip>
     <rust.compile.mode>debug</rust.compile.mode>
     <rust.compile.target>v6d</rust.compile.target>
@@ -95,19 +164,21 @@
     <zookeeper.version>3.6.3</zookeeper.version>
     <curator.version>5.4.0</curator.version>
     <jackson.version>2.14.1</jackson.version>
-    <protoc.version>3.21.12</protoc.version>
-    <protobuf.version>3.21.12</protobuf.version>
+    <protoc.version>3.22.2</protoc.version>
+    <protobuf.version>3.22.2</protobuf.version>
     <grpc.version>1.51.1</grpc.version>
+    <netty.version>4.1.79.Final</netty.version>
     <jna.version>5.7.0</jna.version>
     <junit.version>4.13.2</junit.version>
-    <junit.jupiter.version>5.6.3</junit.jupiter.version>
+    <junit.jupiter.version>5.9.2</junit.jupiter.version>
     <testng.version>6.9.9</testng.version>
     <mockito.version>4.0.0</mockito.version>
-    <rocksdb.version>5.15.10</rocksdb.version>
-    <metrics.core.version>3.2.5</metrics.core.version>
+    <rocksdb.version>8.0.0</rocksdb.version>
+    <metrics.core.version>4.2.18</metrics.core.version>
+    <jgrapht.version>1.5.1</jgrapht.version>
     <skip.tests>true</skip.tests>
     <flatten.maven.plugin>1.1.0</flatten.maven.plugin>
-    <javax.annotation.version>1.2</javax.annotation.version>
+    <javax.annotation.version>1.3.2</javax.annotation.version>
     <guava.version>31.1-jre</guava.version>
     <commons.configuration.version>2.8.0</commons.configuration.version>
     <commons.codec.version>1.15</commons.codec.version>
@@ -119,12 +190,15 @@
     <commons.io.version>2.11.0</commons.io.version>
     <calcite.version>1.32.0</calcite.version>
     <immutables.version>2.9.3</immutables.version>
-    <!-- OSS SDK requires httpclient version to be 4.4.1, related links: https://www.alibabacloud.com/help/zh/object-storage-service/latest/java-faq?spm=a2c63.p38356.0.0.69a63c6bXPt34F-->
-    <httpcomponents.version>4.4.1</httpcomponents.version>
     <kryo.version>4.0.2</kryo.version>
     <antlr4.version>4.9.1</antlr4.version>
-    <aliyun.oss.version>3.14.1</aliyun.oss.version>
+
+    <aliyun.oss.version>3.16.3</aliyun.oss.version>
+    <!-- httpcomponents version should aligh with version of OSS SDK -->
+    <httpcomponents.version>4.5.13</httpcomponents.version>
+
     <odps.sdk.public.version>0.36.4-public</odps.sdk.public.version>
+    <cupid.sdk.version>3.3.8-public</cupid.sdk.version>
     <scala.version>2.12.10</scala.version>
     <scala.binary.version>2.12</scala.binary.version>
     <spark.version>3.1.1</spark.version>
@@ -145,16 +219,11 @@
     <exec.maven.version>3.0.0</exec.maven.version>
     <scala.maven.version>3.2.2</scala.maven.version>
     <cobertura.maven.version>2.7</cobertura.maven.version>
+    <noe4j.version>4.4.0</noe4j.version>
   </properties>
 
   <dependencyManagement>
     <dependencies>
-      <dependency>
-        <groupId>com.alibaba</groupId>
-        <artifactId>fastjson</artifactId>
-        <version>2.0.20</version>
-      </dependency>
-
       <dependency>
         <groupId>com.alibaba.graphscope</groupId>
         <artifactId>interactive-common</artifactId>
@@ -177,7 +246,7 @@
       </dependency>
       <dependency>
         <groupId>com.alibaba.graphscope</groupId>
-        <artifactId>sdk</artifactId>
+        <artifactId>groot-client</artifactId>
         <version>${project.version}</version>
       </dependency>
       <dependency>
@@ -207,6 +276,11 @@
       <dependency>
         <groupId>com.google.protobuf</groupId>
         <artifactId>protobuf-java</artifactId>
+        <version>${protobuf.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>com.google.protobuf</groupId>
+        <artifactId>protobuf-java-util</artifactId>
         <version>${protobuf.version}</version>
       </dependency>
 
@@ -299,7 +373,7 @@
       <dependency>
         <groupId>io.netty</groupId>
         <artifactId>netty-all</artifactId>
-        <version>4.1.79.Final</version>
+        <version>${netty.version}</version>
       </dependency>
 
       <!-- Spark and Scala -->
@@ -320,7 +394,6 @@
         <groupId>org.scala-lang</groupId>
         <artifactId>scala-library</artifactId>
         <version>${scala.version}</version>
-        <scope>provided</scope>
       </dependency>
 
       <!-- ODPS -->
@@ -332,15 +405,27 @@
 
       <dependency>
         <groupId>com.aliyun.odps</groupId>
+        <artifactId>odps-sdk-core</artifactId>
+        <version>${odps.sdk.public.version}</version>
+      </dependency>
+
+      <dependency>
+        <groupId>com.aliyun.odps</groupId>
         <artifactId>odps-sdk-mapred</artifactId>
         <version>${odps.sdk.public.version}</version>
+      </dependency>
+
+      <dependency>
+        <groupId>com.aliyun.odps</groupId>
+        <artifactId>cupid-sdk</artifactId>
+        <version>${cupid.sdk.version}</version>
       </dependency>
 
       <!-- Bill of Materials -->
       <dependency>
         <groupId>com.fasterxml.jackson</groupId>
         <artifactId>jackson-bom</artifactId>
-        <version>2.14.1</version>
+        <version>${jackson.version}</version>
         <scope>import</scope>
         <type>pom</type>
       </dependency>
@@ -356,7 +441,7 @@
       <dependency>
         <groupId>io.grpc</groupId>
         <artifactId>grpc-bom</artifactId>
-        <version>1.51.1</version>
+        <version>${grpc.version}</version>
         <scope>import</scope>
         <type>pom</type>
       </dependency>
@@ -499,6 +584,11 @@
         <artifactId>kafka_2.13</artifactId>
         <version>${kafka.version}</version>
       </dependency>
+      <dependency>
+        <groupId>org.jgrapht</groupId>
+        <artifactId>jgrapht-core</artifactId>
+        <version>${jgrapht.version}</version>
+      </dependency>
 
       <dependency>
         <groupId>com.esotericsoftware</groupId>
@@ -538,6 +628,23 @@
         <version>${calcite.version}</version>
       </dependency>
       <dependency>
+        <groupId>org.neo4j</groupId>
+        <artifactId>neo4j</artifactId>
+        <version>${noe4j.version}</version>
+        <exclusions>
+          <exclusion>
+              <groupId>org.slf4j</groupId>
+              <artifactId>slf4j-nop</artifactId>
+          </exclusion>
+        </exclusions>
+      </dependency>
+      <dependency>
+        <groupId>org.neo4j.driver</groupId>
+        <artifactId>neo4j-java-driver</artifactId>
+        <version>${noe4j.version}</version>
+        <scope>test</scope>
+      </dependency>
+      <dependency>
         <groupId>org.immutables</groupId>
         <artifactId>value</artifactId>
         <version>${immutables.version}</version>
@@ -561,9 +668,9 @@
           <artifactId>maven-compiler-plugin</artifactId>
           <version>${maven.compile.version}</version>
           <configuration>
-            <source>1.8</source>
-            <target>1.8</target>
-        </configuration>
+            <source>11</source>
+            <target>11</target>
+          </configuration>
         </plugin>
         <plugin>
           <artifactId>maven-surefire-plugin</artifactId>
@@ -639,6 +746,70 @@
           <artifactId>scala-maven-plugin</artifactId>
           <version>${scala.maven.version}</version>
         </plugin>
+
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-source-plugin</artifactId>
+          <version>3.2.1</version>
+          <executions>
+            <execution>
+              <id>attach-sources</id>
+              <goals>
+                <goal>jar-no-fork</goal>
+              </goals>
+            </execution>
+          </executions>
+        </plugin>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-javadoc-plugin</artifactId>
+          <version>3.4.1</version>
+          <executions>
+            <execution>
+              <id>attach-javadocs</id>
+              <goals>
+                <goal>jar</goal>
+              </goals>
+            </execution>
+          </executions>
+        </plugin>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-gpg-plugin</artifactId>
+          <version>3.0.1</version>
+          <executions>
+            <execution>
+              <id>sign-artifacts</id>
+              <phase>verify</phase>
+              <goals>
+                <goal>sign</goal>
+              </goals>
+            </execution>
+          </executions>
+        </plugin>
+        <plugin>
+          <groupId>org.sonatype.plugins</groupId>
+          <artifactId>nexus-staging-maven-plugin</artifactId>
+          <version>1.6.13</version>
+          <extensions>true</extensions>
+          <configuration>
+            <serverId>ossrh</serverId>
+            <nexusUrl>https://oss.sonatype.org/</nexusUrl>
+            <autoReleaseAfterClose>false</autoReleaseAfterClose>
+            <stagingRepositoryId>${staging.repository}</stagingRepositoryId>
+          </configuration>
+        </plugin>
+<!--        <plugin>-->
+<!--          <groupId>org.apache.maven.plugins</groupId>-->
+<!--          <artifactId>maven-release-plugin</artifactId>-->
+<!--          <version>2.5.3</version>-->
+<!--          <configuration>-->
+<!--            <autoVersionSubmodules>true</autoVersionSubmodules>-->
+<!--            <useReleaseProfile>false</useReleaseProfile>-->
+<!--            <releaseProfiles>release</releaseProfiles>-->
+<!--            <goals>deploy</goals>-->
+<!--          </configuration>-->
+<!--        </plugin>-->
       </plugins>
     </pluginManagement>
     <plugins>
@@ -667,6 +838,33 @@
           </execution>
         </executions>
       </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-help-plugin</artifactId>
+        <version>3.1.0</version>
+        <executions>
+          <execution>
+            <id>show-profiles</id>
+            <phase>compile</phase>
+            <goals>
+              <goal>active-profiles</goal>
+            </goals>
+          </execution>
+        </executions>
+      </plugin>
     </plugins>
   </build>
+
+  <distributionManagement>
+    <snapshotRepository>
+      <id>sonatype-nexus-snapshots</id>
+      <name>Sonatype Nexus Snapshots</name>
+      <url>https://oss.sonatype.org/content/repositories/snapshots/</url>
+    </snapshotRepository>
+    <repository>
+      <id>ossrh</id>
+      <name>Central Repository OSSRH</name>
+      <url>https://oss.sonatype.org/service/local/staging/deploy/maven2/</url>
+    </repository>
+  </distributionManagement>
 </project>

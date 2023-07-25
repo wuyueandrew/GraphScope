@@ -18,28 +18,36 @@ package com.alibaba.graphscope.cypher.antlr4.visitor;
 
 import com.alibaba.graphscope.common.ir.rel.type.group.GraphAggCall;
 import com.alibaba.graphscope.common.ir.rex.RexTmpVariable;
+import com.alibaba.graphscope.common.ir.tools.AliasIdGenerator;
 import com.alibaba.graphscope.common.ir.tools.GraphBuilder;
+import com.alibaba.graphscope.common.ir.tools.GraphRexBuilder;
 import com.alibaba.graphscope.common.ir.tools.GraphStdOperatorTable;
-import com.alibaba.graphscope.cypher.antlr4.type.ExprVisitorResult;
+import com.alibaba.graphscope.cypher.antlr4.visitor.type.ExprVisitorResult;
 import com.alibaba.graphscope.grammar.CypherGSBaseVisitor;
 import com.alibaba.graphscope.grammar.CypherGSParser;
+import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.Lists;
 
 import org.apache.calcite.rex.RexNode;
 import org.apache.calcite.sql.SqlOperator;
 import org.apache.calcite.tools.RelBuilder;
 import org.apache.commons.lang3.ObjectUtils;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Objects;
 import java.util.stream.Collectors;
 
 public class ExpressionVisitor extends CypherGSBaseVisitor<ExprVisitorResult> {
     private final GraphBuilderVisitor parent;
     private final GraphBuilder builder;
+    private final AliasIdGenerator paramIdGenerator;
 
     public ExpressionVisitor(GraphBuilderVisitor parent) {
         this.parent = parent;
         this.builder = Objects.requireNonNull(parent).getGraphBuilder();
+        this.paramIdGenerator = new AliasIdGenerator();
     }
 
     @Override
@@ -185,6 +193,14 @@ public class ExpressionVisitor extends CypherGSBaseVisitor<ExprVisitorResult> {
     }
 
     @Override
+    public ExprVisitorResult visitOC_Parameter(CypherGSParser.OC_ParameterContext ctx) {
+        String paramName = ctx.oC_SymbolicName().getText();
+        int paramIndex = this.paramIdGenerator.generate(paramName);
+        GraphRexBuilder rexBuilder = (GraphRexBuilder) builder.getRexBuilder();
+        return new ExprVisitorResult(rexBuilder.makeGraphDynamicParam(paramName, paramIndex));
+    }
+
+    @Override
     public ExprVisitorResult visitOC_BooleanLiteral(CypherGSParser.OC_BooleanLiteralContext ctx) {
         return new ExprVisitorResult(
                 builder.literal(LiteralVisitor.INSTANCE.visitOC_BooleanLiteral(ctx)));
@@ -239,6 +255,35 @@ public class ExpressionVisitor extends CypherGSBaseVisitor<ExprVisitorResult> {
         return new ExprVisitorResult(
                 ImmutableList.of(aggCall),
                 RexTmpVariable.of(alias, ((GraphAggCall) aggCall).getType()));
+    }
+
+    @Override
+    public ExprVisitorResult visitOC_CaseExpression(CypherGSParser.OC_CaseExpressionContext ctx) {
+        ExprVisitorResult inputExpr =
+                ctx.oC_InputExpression() == null
+                        ? null
+                        : visitOC_InputExpression(ctx.oC_InputExpression());
+        List<RexNode> operands = Lists.newArrayList();
+        for (CypherGSParser.OC_CaseAlternativeContext whenThen : ctx.oC_CaseAlternative()) {
+            Preconditions.checkArgument(
+                    whenThen.oC_Expression().size() == 2,
+                    "whenThen expression should have 2 parts");
+            ExprVisitorResult whenExpr = visitOC_Expression(whenThen.oC_Expression(0));
+            if (inputExpr != null) {
+                operands.add(builder.equals(inputExpr.getExpr(), whenExpr.getExpr()));
+            } else {
+                operands.add(whenExpr.getExpr());
+            }
+            ExprVisitorResult thenExpr = visitOC_Expression(whenThen.oC_Expression(1));
+            operands.add(thenExpr.getExpr());
+        }
+        // if else expression is omitted, the default value is null
+        ExprVisitorResult elseExpr =
+                ctx.oC_ElseExpression() == null
+                        ? new ExprVisitorResult(builder.literal(null))
+                        : visitOC_ElseExpression(ctx.oC_ElseExpression());
+        operands.add(elseExpr.getExpr());
+        return new ExprVisitorResult(builder.call(GraphStdOperatorTable.CASE, operands));
     }
 
     private ExprVisitorResult binaryCall(
